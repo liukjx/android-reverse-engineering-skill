@@ -10,304 +10,377 @@ Decompile Android APK, XAPK, JAR, and AAR files using jadx and Fernflower/Vinefl
 
 ## Prerequisites
 
-This skill requires **Java JDK 17+** and **jadx** to be installed. **Fernflower/Vineflower** and **dex2jar** are optional but recommended for better decompilation quality. Run the dependency checker to verify:
+This skill requires **Java JDK 17+** and **jadx** to be installed. Run the dependency checker first.
 
-```bash
-bash ${CLAUDE_PLUGIN_ROOT}/skills/android-reverse-engineering/scripts/check-deps.sh
-```
+**重要：本机已预装的环境（无需再次安装）：**
 
-On Windows (PowerShell):
-```powershell
-& "${CLAUDE_PLUGIN_ROOT}/skills/android-reverse-engineering/scripts/check-deps.ps1"
-```
-
-If anything is missing, follow the installation instructions in `${CLAUDE_PLUGIN_ROOT}/skills/android-reverse-engineering/references/setup-guide.md`.
+| 工具 | 路径 |
+|------|------|
+| JDK 17 (jadx 用) | `/d/program/openjdk-17+35_windows-x64_bin/jdk-17/` |
+| JDK 21 (Ghidra 用) | `/d/program/jdk-21.0.12.1/` |
+| jadx | `/d/static/jadx/bin/jadx` |
+| Ghidra 12.1.3 | `/d/program/ghidra_12.1.3_PUBLIC/` |
+| dotnet 9.0 | 系统已安装 |
+| Python capstone | `pip install capstone` |
+| Il2CppDumper | 若不存在自动从 `wklin8607/Il2CppDumper` 下载 |
+| Cpp2IL | 若不存在自动从 `SamboyCoding/Cpp2IL` 下载 |
 
 ## Workflow
 
-### Phase 0: Fingerprint the App (recommended before anything else)
+### Phase 0: Fingerprint the App
 
-Before installing tools or decompiling, run a fast triage to determine what
-kind of app you are looking at. **Decompiling Java is mostly useless for
-Flutter, React Native, Cordova/Capacitor, and Xamarin apps** — the real code
-lives elsewhere. The fingerprint script tells you which.
+Run this BEFORE anything else to determine what kind of app you're looking at:
 
 ```bash
-bash ${CLAUDE_PLUGIN_ROOT}/skills/android-reverse-engineering/scripts/fingerprint.sh <file.apk|file.xapk>
+APK="<path/to/app.apk>"
+bash C:/Users/13087/.claude/plugins/repos/android-reverse-engineering/plugins/android-reverse-engineering/skills/android-reverse-engineering/scripts/fingerprint.sh "$APK"
 ```
 
-It prints, in one screen:
+**关键判断：**
+- 有 `libil2cpp.so` → **Unity IL2CPP** → 跳转到 Phase U1（以下标准 Phases 1-5 无用）
+- 有 `Assembly-CSharp.dll`（无 libil2cpp）→ **Unity Mono** → 用 dnSpy 直接打开
+- 无上述文件 → 标准 Android 应用 → 继续 Phase 1
 
-- **Mobile framework** (Flutter / React Native / Cordova / Xamarin / Native Kotlin / etc.) with the file marker that triggered the verdict.
-- **HTTP stack** (Retrofit, OkHttp, Ktor, Apollo, Volley) detected via DEX string scan — works even when class names are obfuscated.
-- **DI / serialization** signals (Hilt, Dagger, Koin, kotlinx.serialization, Moshi, Gson, Jackson).
-- **Obfuscation level** estimate based on root-level short-named packages.
-- **Notable third-party SDKs** (AppsFlyer, Datadog, Sentry, Firebase, payment SDKs, support/chat SDKs, etc.).
-- **Consolidated native libraries** across the base APK and all splits — XAPK split bundles often place `.so` files in `config.<abi>.apk`, not in `base.apk`.
-- **Recommended next step**, which differs by framework (e.g. for Flutter the script suggests `blutter` / `strings libapp.so` rather than jadx).
+---
 
-If the fingerprint says the app is Flutter / RN / Cordova / Xamarin, **stop**
-and switch to the framework-appropriate tooling. Phases 1–5 below assume a
-native (Java/Kotlin) Android app.
+## 标准 Android 应用工作流（Phases 1-5）
 
-### Phase 1: Verify and Install Dependencies
-
-Before decompiling, confirm that the required tools are available — and install any that are missing.
-
-**Action**: Run the dependency check script.
+### Phase 1: 依赖检查
 
 ```bash
-bash ${CLAUDE_PLUGIN_ROOT}/skills/android-reverse-engineering/scripts/check-deps.sh
+export JAVA_HOME="/d/program/openjdk-17+35_windows-x64_bin/jdk-17"
+export PATH="$JAVA_HOME/bin:$PATH"
+bash C:/Users/13087/.claude/plugins/repos/android-reverse-engineering/plugins/android-reverse-engineering/skills/android-reverse-engineering/scripts/check-deps.sh
 ```
 
-On Windows (PowerShell):
-```powershell
-& "${CLAUDE_PLUGIN_ROOT}/skills/android-reverse-engineering/scripts/check-deps.ps1"
-```
+如果 jadx 缺失，它内置在 `/d/static/jadx/bin/jadx` 中，确保它在 PATH 中。
 
-The output contains machine-readable lines:
-- `INSTALL_REQUIRED:<dep>` — must be installed before proceeding
-- `INSTALL_OPTIONAL:<dep>` — recommended but not blocking
-
-**If required dependencies are missing** (exit code 1), install them automatically:
+### Phase 2: jadx 反编译
 
 ```bash
-bash ${CLAUDE_PLUGIN_ROOT}/skills/android-reverse-engineering/scripts/install-dep.sh <dep>
+export JAVA_HOME="/d/program/openjdk-17+35_windows-x64_bin/jdk-17"
+export PATH="$JAVA_HOME/bin:$PATH"
+bash C:/Users/13087/.claude/plugins/repos/android-reverse-engineering/plugins/android-reverse-engineering/skills/android-reverse-engineering/scripts/decompile.sh \
+  --engine jadx -o <output-dir> "$APK"
 ```
 
-On Windows (PowerShell):
-```powershell
-& "${CLAUDE_PLUGIN_ROOT}/skills/android-reverse-engineering/scripts/install-dep.ps1" <dep>
-```
+### Phase 3-5: 结构分析和 API 提取
 
-The install script detects the OS and package manager, then:
-- Installs without sudo when possible (downloads to `~/.local/share/`, symlinks in `~/.local/bin/`)
-- Uses sudo and the system package manager when necessary (apt, dnf, pacman)
-- If sudo is needed but unavailable or the user declines, it prints the exact manual command and exits with code 2 — show these instructions to the user
+详见原 SKILL.md 对应章节（分析 AndroidManifest、BuildConfig、Retrofit 注解等）。
 
-**Windows notes**: The PowerShell install script uses `winget`, `scoop`, or `choco` (in that order). If none are available, it downloads directly to `%USERPROFILE%\.local\share\` and adds the directory to the user's PATH. After running `install-dep.ps1`, the PATH is persisted but the current terminal session may not see it. The `check-deps.ps1` and `decompile.ps1` scripts automatically refresh PATH from the user environment, so re-running them will find newly installed tools without restarting the terminal.
+---
 
-**For optional dependencies**, ask the user if they want to install them. Vineflower and dex2jar are recommended for best results.
+## Unity IL2CPP 游戏工作流（Phases U1-U8）
 
-After installation, re-run `check-deps.sh` to confirm everything is in place. Do not proceed to Phase 2 until all required dependencies are OK.
+> 如果 Phase 0 检测到 `libil2cpp.so`，走此工作流。此处整合了全部工具链，修复了 JAVA_HOME 冲突，增加了 C# 恢复步骤。
 
-### Phase 2: Decompile
+### Phase U1: 提取关键文件
 
-Use the decompile wrapper script to process the target file. The script supports three engines: `jadx`, `fernflower`, and `both`.
-
-**Action**: Choose the engine and run the decompile script. The script handles APK, XAPK, JAR, and AAR files.
+从 APK 中解压出两个核心文件：
 
 ```bash
-bash ${CLAUDE_PLUGIN_ROOT}/skills/android-reverse-engineering/scripts/decompile.sh [OPTIONS] <file>
+APK="<path/to/app.apk>"
+WORK_DIR="<work-dir>"
+mkdir -p "$WORK_DIR/apk-extracted"
+
+unzip -o "$APK" "lib/arm64-v8a/libil2cpp.so" -d "$WORK_DIR/apk-extracted"
+unzip -o "$APK" "assets/bin/Data/Managed/Metadata/global-metadata.dat" -d "$WORK_DIR/apk-extracted"
 ```
 
-On Windows (PowerShell):
-```powershell
-& "${CLAUDE_PLUGIN_ROOT}/skills/android-reverse-engineering/scripts/decompile.ps1" [OPTIONS] <file>
-```
+### Phase U2: Il2CppDumper（方法结构提取）
 
-For **XAPK** files (ZIP bundles containing multiple APKs, used by APKPure and similar stores): the script automatically extracts the archive, identifies all APK files inside (base + split APKs), and decompiles each one into a separate subdirectory. The XAPK manifest is copied to the output for reference.
-
-**Split/bundled APK detection**: Some APKs are actually bundle wrappers — the outer APK contains `base.apk` plus `split_config.*.apk` files inside its resources directory. When this happens, jadx will decompile the thin wrapper and produce very few Java files. The decompile scripts automatically detect this (≤10 Java files + inner APKs present) and re-decompile `base.apk` into an `<output>/base/` subdirectory. Config-only splits (ABI, language, density) are skipped. The main decompiled source will be in `<output>/base/sources/`.
-
-Options:
-- `-o <dir>` — Custom output directory (default: `<filename>-decompiled`)
-- `--deobf` — Enable deobfuscation (recommended for obfuscated apps)
-- `--no-res` — Skip resources, decompile code only (faster)
-- `--engine ENGINE` — `jadx` (default), `fernflower`, or `both`
-
-**Engine selection strategy**:
-
-| Situation | Engine |
-|---|---|
-| First pass on any APK | `jadx` (fastest, handles resources) |
-| JAR/AAR library analysis | `fernflower` (better Java output) |
-| jadx output has warnings/broken code | `both` (compare and pick best per class) |
-| Complex lambdas, generics, streams | `fernflower` |
-| Quick overview of a large APK | `jadx --no-res` |
-
-When using `--engine both`, the outputs go into `<output>/jadx/` and `<output>/fernflower/` respectively, with a comparison summary at the end showing file counts and jadx warning counts. Review classes with jadx warnings in the Fernflower output for better code.
-
-For APK files with Fernflower, the script automatically uses dex2jar as an intermediate step. dex2jar must be installed for this to work.
-
-See `${CLAUDE_PLUGIN_ROOT}/skills/android-reverse-engineering/references/jadx-usage.md` and `${CLAUDE_PLUGIN_ROOT}/skills/android-reverse-engineering/references/fernflower-usage.md` for the full CLI references.
-
-### Phase 3: Analyze Structure
-
-Navigate the decompiled output to understand the app's architecture.
-
-**Actions**:
-
-1. **Read AndroidManifest.xml** from `<output>/resources/AndroidManifest.xml`:
-   - Identify the main launcher Activity
-   - List all Activities, Services, BroadcastReceivers, ContentProviders
-   - Note permissions (especially `INTERNET`, `ACCESS_NETWORK_STATE`)
-   - Find the application class (`android:name` on `<application>`)
-
-2. **Survey the package structure** under `<output>/sources/`:
-   - Identify the main app package and sub-packages
-   - Distinguish app code from third-party libraries
-   - Look for packages named `api`, `network`, `data`, `repository`, `service`, `retrofit`, `http` — these are where API calls live
-
-3. **Read every `BuildConfig.java`** — these are almost never obfuscated and frequently leak the highest-signal constants in the entire APK (base URLs, flavor names, build type, third-party API keys, feature flags):
-   ```bash
-   find <output>/sources -name BuildConfig.java -exec grep -H '=' {} \;
-   ```
-   Each Gradle module emits its own `BuildConfig`, so expect 1–N hits. Read all of them.
-
-4. **Identify the architecture pattern**:
-   - MVP: look for `Presenter` classes
-   - MVVM: look for `ViewModel` classes and `LiveData`/`StateFlow`
-   - Clean Architecture: look for `domain`, `data`, `presentation` packages
-   - This informs where to look for network calls in the next phases
-
-### Phase 3.5: Recover Kotlin Class Names (only for obfuscated Kotlin apps)
-
-If Phase 0 reported moderate / high obfuscation **and** the app is Kotlin
-(Compose / kotlin_module markers detected), run the metadata recovery
-script before tracing call flows. R8 obfuscates JVM symbols but cannot
-strip Kotlin metadata strings, so original FQNs leak through
-`@DebugMetadata` and `@Metadata.d2`.
+**JAVA_HOME 使用 JDK 17（与 jadx 保持一致，Il2CppDumper 不需要 Java）。**
 
 ```bash
-bash ${CLAUDE_PLUGIN_ROOT}/skills/android-reverse-engineering/scripts/recover-kotlin-names.sh \
-    <output>/sources <output>/mapping
+# 检查是否已有 Il2CppDumper
+IL2CPP_DUMPER="$WORK_DIR/Il2CppDumper-v6.7.48/extracted"
+if [ ! -f "$IL2CPP_DUMPER/Il2CppDumper.exe" ]; then
+  # 下载 wklin8607 分支（支持 metadata v39）
+  gh release download --repo wklin8607/Il2CppDumper --pattern "*net8.0*" -D "$WORK_DIR/Il2CppDumper-v6.7.48"
+  unzip -o "$WORK_DIR/Il2CppDumper-v6.7.48/Il2CppDumper-v6.7.48-net8.0.zip" -d "$IL2CPP_DUMPER"
+fi
+
+"$IL2CPP_DUMPER/Il2CppDumper.exe" \
+  "$WORK_DIR/apk-extracted/lib/arm64-v8a/libil2cpp.so" \
+  "$WORK_DIR/apk-extracted/assets/bin/Data/Managed/Metadata/global-metadata.dat" \
+  "$WORK_DIR/il2cpp-output"
 ```
 
-Then use the lookup helper instead of plain grep — every hit comes
-annotated with the owning class's real name:
+**关键输出：**
+| 文件 | 用途 |
+|------|------|
+| `dump.cs` (99MB) | 所有类/字段/方法定义 |
+| `script.json` (293MB) | 完整符号表（地址→方法名） |
+| `stringlteral.json` | 所有字符串常量 |
+| `DummyDll/` | 伪 DLL（可用于 dnSpy 浏览结构） |
+
+### Phase U3: 预过滤符号表
+
+> script.json 有 293MB/644K 方法，直接使用太慢。过滤出应用自身代码。
 
 ```bash
-bash ${CLAUDE_PLUGIN_ROOT}/skills/android-reverse-engineering/scripts/lookup-name.sh \
-    <output>/mapping --grep '"/api/' <output>/sources
+python3 << 'PYEOF'
+import json
+WORK_DIR = "<work-dir>"
+keywords = ["ATiStudios", "Mondly", "Chatbot", "Grader", "Speech", "AI",
+            "Database", "OpenAI", "Azure", "Gemini", "Whisper", "Oculus",
+            "HandsFree", "Vocabulary", "Lesson"]
+
+with open(f"{WORK_DIR}/il2cpp-output/script.json", "rb") as f:
+    data = json.loads(f.read().decode("utf-8"))
+
+filtered = {
+    "ScriptMethod": [m for m in data["ScriptMethod"] if any(k in m["Name"] for k in keywords)],
+    "ScriptString": [s for s in data["ScriptString"] if "http" in str(s.get("Value", ""))],
+    "Addresses": data["Addresses"]
+}
+
+with open(f"{WORK_DIR}/il2cpp-output/script_filtered.json", "w") as f:
+    json.dump(filtered, f)
+
+# 同时生成地址→名称映射文件（给 Capstone/Ghidra 用）
+with open("/d/ghidra-scripts/symbols_map.txt", "w") as f:
+    for m in filtered["ScriptMethod"]:
+        name = m["Name"].replace(" ", "_").replace(":", "_").replace("/", "_")
+        f.write(f"{m['Address']:x}|{name}\n")
+
+print(f"Filtered: {len(filtered['ScriptMethod'])} methods")
+PYEOF
 ```
 
-Typical recovery on a real-world Kotlin app: ~100% of `*Repository` /
-`*ViewModel` / `*UseCase` / `*Impl` classes, ~80% of DTOs.
+### Phase U4: Cpp2IL（C# 源码恢复）
 
-See `${CLAUDE_PLUGIN_ROOT}/skills/android-reverse-engineering/references/kotlin-name-recovery.md`
-for the full technique and limitations.
-
-### Phase 4: Trace Call Flows
-
-Follow execution paths from user-facing entry points down to network calls.
-
-**Actions**:
-
-1. **Start from entry points**: Read the main Activity or Application class identified in Phase 3.
-
-2. **Follow the initialization chain**: Application.onCreate() often sets up the HTTP client, base URL, and DI framework. Read this first.
-
-3. **Trace user actions**: From an Activity, follow:
-   - `onCreate()` → view setup → click listeners
-   - Click handler → ViewModel/Presenter method
-   - ViewModel → Repository → API service interface
-   - API service → actual HTTP call
-
-4. **Map DI bindings** (if Dagger/Hilt is used): Find `@Module` classes to understand which implementations are provided for which interfaces.
-
-5. **Handle obfuscated code**: When class names are mangled, use string literals and library API calls as anchors. Retrofit annotations and URL strings are never obfuscated.
-
-See `${CLAUDE_PLUGIN_ROOT}/skills/android-reverse-engineering/references/call-flow-analysis.md` for detailed techniques and grep commands.
-
-### Phase 5: Extract and Document APIs
-
-Find all API endpoints and produce structured documentation.
-
-**Action**: Run the API search script for a broad sweep.
+> 这是将 IL2CPP 转回 C# 源码的关键步骤。Cpp2IL 从 `libil2cpp.so` 中恢复 IL 字节码，生成包含方法签名的 DLL。
 
 ```bash
-bash ${CLAUDE_PLUGIN_ROOT}/skills/android-reverse-engineering/scripts/find-api-calls.sh <output>/sources/
+# 检查是否有 Cpp2IL
+CPP2IL="$WORK_DIR/Cpp2IL/Cpp2IL-2022.1.0-pre-release.21-Windows.exe"
+if [ ! -f "$CPP2IL" ]; then
+  gh release download "2022.1.0-pre-release.21" \
+    --repo SamboyCoding/Cpp2IL --pattern "*Windows.exe" -D "$WORK_DIR/Cpp2IL"
+fi
+
+# 运行（约 1-2 分钟）
+"$CPP2IL" \
+  --force-binary-path "$WORK_DIR/apk-extracted/lib/arm64-v8a/libil2cpp.so" \
+  --force-metadata-path "$WORK_DIR/apk-extracted/assets/bin/Data/Managed/Metadata/global-metadata.dat" \
+  --force-unity-version "2023.3.0" \
+  --output-as dll_il_recovery \
+  --output-to "$WORK_DIR/cpp2il-output" \
+  --use-processor "attributeanalyzer,attributeinjector"
 ```
 
-On Windows (PowerShell):
-```powershell
-& "${CLAUDE_PLUGIN_ROOT}/skills/android-reverse-engineering/scripts/find-api-calls.ps1" <output>/sources/
-```
+**输出**：233+ 个 DLL 文件，包含 IL 字节码和方法签名。
 
-Targeted searches:
+### Phase U5: 用 ICSharpCode.Decompiler 反编译 DLL 为 C# 源码
+
+> 通过 .NET 工具批量将 DLL 转成 .cs 文件。
+
 ```bash
-# Only Retrofit
-bash ${CLAUDE_PLUGIN_ROOT}/skills/android-reverse-engineering/scripts/find-api-calls.sh <output>/sources/ --retrofit
+# 创建 .NET 反编译控制台项目（首次需要）
+if [ ! -f "$WORK_DIR/tmp_decomp/Program.cs" ]; then
+  dotnet new console -o "$WORK_DIR/tmp_decomp"
+  dotnet add "$WORK_DIR/tmp_decomp/tmp_decomp.csproj" \
+    package ICSharpCode.Decompiler --version 8.2.0.7535
 
-# Only hardcoded URLs
-bash ${CLAUDE_PLUGIN_ROOT}/skills/android-reverse-engineering/scripts/find-api-calls.sh <output>/sources/ --urls
+  # 写入反编译代码
+  cat > "$WORK_DIR/tmp_decomp/Program.cs" << 'EOS'
+using System;
+using System.IO;
+using System.Linq;
+using ICSharpCode.Decompiler;
+using ICSharpCode.Decompiler.CSharp;
 
-# Only auth patterns
-bash ${CLAUDE_PLUGIN_ROOT}/skills/android-reverse-engineering/scripts/find-api-calls.sh <output>/sources/ --auth
+string inputDir = args.Length >= 1 ? args[0] : @"<WORK_DIR>/cpp2il-output";
+string outputDir = args.Length >= 2 ? args[1] : @"<WORK_DIR>/source";
+Directory.CreateDirectory(outputDir);
+
+var dlls = Directory.GetFiles(inputDir, "*.dll")
+    .Where(f => Path.GetFileName(f).Contains("ATiStudios") ||
+                Path.GetFileName(f) == "Assembly-CSharp.dll")
+    .OrderBy(f => f).ToList();
+
+var settings = new DecompilerSettings(LanguageVersion.Latest) {
+    ThrowOnAssemblyResolveErrors = false,
+    AsyncAwait = true, AutomaticProperties = true,
+    UsingDeclarations = true,
+};
+
+int total = 0;
+foreach (var dll in dlls) {
+    string name = Path.GetFileNameWithoutExtension(dll);
+    string outDir = Path.Combine(outputDir, name);
+    Directory.CreateDirectory(outDir);
+    Console.Write($"Decompiling {name}... ");
+    try {
+        var decompiler = new CSharpDecompiler(dll, settings);
+        var types = decompiler.TypeSystem.MainModule.TypeDefinitions.ToList();
+        int count = 0;
+        foreach (var type in types) {
+            try {
+                string fullName = type.FullName;
+                if (fullName.Contains("<>") || fullName.Contains("DisplayClass")) continue;
+                string code = decompiler.DecompileTypeAsString(type.FullTypeName);
+                if (code.Length < 30) continue;
+                string fileName = type.Name.Replace("<", "_").Replace(">", "_") + ".cs";
+                int lastDot = fullName.LastIndexOf('.');
+                string filePath;
+                if (lastDot > 0) {
+                    string ns = fullName.Substring(0, lastDot);
+                    string nsDir = Path.Combine(outDir, ns.Replace('.', Path.DirectorySeparatorChar));
+                    Directory.CreateDirectory(nsDir);
+                    filePath = Path.Combine(nsDir, fileName);
+                } else {
+                    filePath = Path.Combine(outDir, fileName);
+                }
+                File.WriteAllText(filePath, code);
+                count++;
+            } catch { }
+        }
+        total += count;
+        Console.WriteLine($"{count} files");
+    } catch (Exception e) {
+        Console.WriteLine($"FAILED: {e.Message}");
+    }
+}
+Console.WriteLine($"\nDone: {total} .cs files");
+EOS
+fi
+
+# 运行反编译
+dotnet run --project "$WORK_DIR/tmp_decomp"
 ```
 
-On Windows (PowerShell):
-```powershell
-# Only Retrofit
-& "${CLAUDE_PLUGIN_ROOT}/skills/android-reverse-engineering/scripts/find-api-calls.ps1" <output>/sources/ -Retrofit
+**输出**：2,000-3,000 个 `.cs` 文件，包含完整的类结构和方法签名。
 
-# Only hardcoded URLs
-& "${CLAUDE_PLUGIN_ROOT}/skills/android-reverse-engineering/scripts/find-api-calls.ps1" <output>/sources/ -Urls
+### Phase U6: ARM64 汇编级反编译（Capstone）
 
-# Only auth patterns
-& "${CLAUDE_PLUGIN_ROOT}/skills/android-reverse-engineering/scripts/find-api-calls.ps1" <output>/sources/ -Auth
+> 对于需要看实际逻辑的关键函数，直接从二进制提取 ARM64 指令。
+
+```bash
+python3 << 'PYEOF'
+import struct, os
+from capstone import *
+
+WORK_DIR = "<work-dir>"
+BINARY = WORK_DIR + "/apk-extracted/lib/arm64-v8a/libil2cpp.so"
+MAP_FILE = "D:/ghidra-scripts/symbols_map.txt"
+OUTPUT = WORK_DIR + "/decompiled_disassembly.txt"
+
+entries = []
+with open(MAP_FILE) as f:
+    for line in f:
+        p = line.strip().split("|", 1)
+        if len(p) == 2: entries.append((int(p[0], 16), p[1]))
+entries.sort()
+
+with open(BINARY, "rb") as f: elf = f.read()
+e_shoff = struct.unpack_from("<Q", elf, 0x28)[0]
+e_shentsize = struct.unpack_from("<H", elf, 0x3A)[0]
+e_shnum = struct.unpack_from("<H", elf, 0x3C)[0]
+e_shstrndx = struct.unpack_from("<H", elf, 0x3E)[0]
+st_off = struct.unpack_from("<Q", elf, e_shoff + e_shstrndx * e_shentsize + 24)[0]
+st_size = struct.unpack_from("<Q", elf, e_shoff + e_shstrndx * e_shentsize + 32)[0]
+shstrtab = elf[st_off:st_off+st_size]
+
+for i in range(e_shnum):
+    o = e_shoff + i * e_shentsize
+    name_off = struct.unpack_from("<I", elf, o)[0]
+    name = shstrtab[name_off:shstrtab.index(b"\x00", name_off)].decode()
+    if name == "il2cpp":
+        sec_addr = struct.unpack_from("<Q", elf, o + 16)[0]
+        sec_off = struct.unpack_from("<Q", elf, o + 24)[0]
+        break
+
+md = Cs(CS_ARCH_ARM64, CS_MODE_ARM)
+with open(OUTPUT, "w") as outf:
+    for ah, nm in entries[:100]:
+        off = ah - sec_addr + sec_off
+        next_a = next((a for a, _ in entries if a > ah), ah + 0x400)
+        sz = min(next_a - ah, 0x400)
+        if off + sz > len(elf): sz = len(elf) - off
+        code = elf[off:off+sz]
+        outf.write(f"\n// {nm}\n// 0x{ah:x} size={sz}\n")
+        for i in md.disasm(code, ah):
+            outf.write(f"  {i.address:#010x}: {i.mnemonic:12s} {i.op_str}\n")
+print(f"Output: {OUTPUT}")
+PYEOF
 ```
 
-Document the endpoints in **two tiers** — going deep on every endpoint is
-prohibitively expensive on apps with 100+ paths, and most of them do not
-warrant it. Always produce Tier 1; expand Tier 2 only for the endpoints
-that matter.
+如果关心特定的 3-5 个函数，这个步骤可以快速给出 ARM64 指令级视图，结合上一阶段的 C# 签名可以间接推导逻辑。
 
-#### Tier 1 — flat inventory (always)
+### Phase U7: Ghidra 深度分析（需要时使用）
 
-A single table covering every discovered endpoint. Aim for one line each;
-if you cannot determine a column, write `?`.
+> 需要 C 级别反编译时用 Ghidra。由于 IL2CPP 的函数入口非标准，建议通过 Ghidra GUI 操作。
 
-| Host | Method | Path | Auth | Source file |
-|------|--------|------|------|-------------|
-| `api.example.com` | GET | `/v1/users/profile` | Bearer | `com/example/api/UserApi.java` |
-| `api.example.com` | POST | `/v1/auth/login` | none | `com/example/api/AuthApi.java` |
+```bash
+# 设置 JDK 21（Ghidra 需要）
+export JAVA_HOME="/d/program/jdk-21.0.12.1"  
+export PATH="$JAVA_HOME/bin:$PATH"
 
-This table answers "what does the backend look like" in one screen and
-takes ~5 minutes to produce from the `--paths` output even on a large app.
+# 创建 Ghidra 项目
+GHIDRA_HOME="/d/program/ghidra_12.1.3_PUBLIC"
+"$GHIDRA_HOME/support/analyzeHeadless.bat" \
+    "$WORK_DIR/ghidra_project" "mondly_re" \
+    -import "$WORK_DIR/apk-extracted/lib/arm64-v8a/libil2cpp.so" \
+    -noanalysis -overwrite
 
-#### Tier 2 — per-endpoint detail (only for high-value endpoints)
-
-Reserve the detailed format for the few endpoints that actually need it:
-
-- the entire authentication flow (login, refresh, logout, OTP/SMS, anonymous, registration)
-- payment / checkout / order-creation endpoints
-- anything the user explicitly asked about
-- anything that looked unusual during the scan (custom signing, undocumented headers, etc.)
-
-```markdown
-### `METHOD /path`
-
-- **Source**: `com.example.api.ApiService` (ApiService.java:42)
-- **Base URL**: `https://api.example.com/v1`
-- **Path params**: `id` (String)
-- **Query params**: `page` (int), `limit` (int)
-- **Headers**: `Authorization: Bearer <token>`
-- **Request body**: `{ "email": "string", "password": "string" }`
-- **Response**: `ApiResponse<User>`
-- **Called from**: `LoginActivity → LoginViewModel → UserRepository → ApiService`
+# 应用符号表
+# （在 Ghidra GUI 中操作：Script Manager → 添加 /d/ghidra-scripts/ → 运行 LoadSymbols.java）
+# 或者直接使用符号映射文件：D:/ghidra-scripts/symbols_map.txt
 ```
 
-As a default, do not produce Tier 2 entries for more than ~10 endpoints
-unless the user explicitly asks for more — Tier 1 plus a Tier 2 deep dive
-on auth + 1-2 key flows is what most consumers of this work actually want.
+> ⚠️ **JAVA_HOME 切换提醒**：Ghidra 需要 JDK 21，而 jadx 需要 JDK 17。两者冲突时：
+> - jadx 用：`export JAVA_HOME="/d/program/openjdk-17+35_windows-x64_bin/jdk-17"`
+> - Ghidra 用：`export JAVA_HOME="/d/program/jdk-21.0.12.1"`
+> 建議在脚本中显式设置，不要依赖全局 JAVA_HOME。
 
-See `${CLAUDE_PLUGIN_ROOT}/skills/android-reverse-engineering/references/api-extraction-patterns.md` for library-specific search patterns and the full documentation template.
+### Phase U8: 字符串常量分析（信号最强）
+
+```bash
+# 从 stringiteral.json 提取所有 URL 和 API Key
+python3 -c "
+import jso
+with open('$WORK_R/il2cpp-output/stringliteral.json') as f:
+    for itm in json.load(f):
+        val = tem.get('value', ")
+        if 'htp' i val or 'api' i val or 'ey' i va:
+            prit(val[:150])
+"
+```
+
+---
+
+## Java 版本速查
+
+| 操作 | JAVA_HOME 设置 |
+|-----|------|
+| jadx 反编译 | `export JAVA_HOME="/d/program/openjdk-17+35_windows-x64_bin/jdk-17"`|
+| Ghidra 导入/分析 | `export A_OME="/d/program/jdk-21.0.12.1"`|
+| Il2CppDumper | 不需要 Java |
+| Cpp2IL | 不需要 Java |
+| ICSharpCode.Decompiler | 使用 dotnet，不需要 Java |
+
+---
+
+## 工具缓存位置
+
+所有工具下载一次后可重复使用：
+
+| 工具 | 缓存路径 |
+|------|---------|
+|Il2CppDumper（支持 v39）| `$WORK_DIR/Il2CppDumper-v6.7.48/extracted/` |
+| Cpp2IL | `$WORK_DIR/Cpp2IL/Cpp2IL-*.exe` |
+| Ghidra | `/d/program/ghidra_12.1.3_PUBLIC/` |
+| ILSpy 源码生成器 | `$WORK_TMP/tmp_decomp/` |
+
+---
 
 ## Output
 
-At the end of the workflow, deliver:
-
-1. **Decompiled source** in the output directory
-2. **Architecture summary** — app structure, main packages, pattern used
-3. **API documentation** — all discovered endpoints in the format above
-4. **Call flow map** — key paths from UI to network (especially authentication and main features)
-
-## References
-
-- `${CLAUDE_PLUGIN_ROOT}/skills/android-reverse-engineering/references/setup-guide.md` — Installing Java, jadx, Fernflower/Vineflower, dex2jar, and optional tools
-- `${CLAUDE_PLUGIN_ROOT}/skills/android-reverse-engineering/references/jadx-usage.md` — jadx CLI options and workflows
-- `${CLAUDE_PLUGIN_ROOT}/skills/android-reverse-engineering/references/fernflower-usage.md` — Fernflower/Vineflower CLI options, when to use, APK workflow
-- `${CLAUDE_PLUGIN_ROOT}/skills/android-reverse-engineering/references/api-extraction-patterns.md` — Library-specific search patterns and documentation template
-- `${CLAUDE_PLUGIN_ROOT}/skills/android-reverse-engineering/references/call-flow-analysis.md` — Techniques for tracing call flows in decompiled code
+最终交付物：
+1. **C# 结构源码** — 见 `source/` 目录
+2. **ARM64 汇编**（关键函数） — 见 `decompiled_key_functions.txt`
+3. **dump.cs** — 完整类定义
+4. **API 文档** — 字符串常量中提取的所有 URL
+5. **架构总结** — 模块依赖和调用链

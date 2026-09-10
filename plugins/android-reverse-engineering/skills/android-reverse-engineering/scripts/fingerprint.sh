@@ -236,6 +236,21 @@ case "$FRAMEWORK" in
     echo "  jadx will only show the Mono host."
     ;;
   *)
-    echo "  Proceed with Phase 2: bash scripts/decompile.sh <file>"
+    # Check if Unity IL2CPP is detected via native lib
+    if echo "$NATIVE" | grep -q "libil2cpp.so"; then
+      echo "  ⚠️  Unity IL2CPP game detected! Java decompilation (jadx) will"
+      echo "  only show Unity engine wrapper code. Real game logic is in"
+      echo "  libil2cpp.so + global-metadata.dat."
+      echo ""
+      echo "  Use Il2CppDumper to recover class/method structure:"
+      echo "    gh release download --repo Perfare/Il2CppDumper --pattern '*win*'"
+      echo "    Il2CppDumper.exe libil2cpp.so global-metadata.dat ./output"
+      echo ""
+      echo "  Then analyze with Ghidra/IDA + script.json, or use Cpp2IL for"
+      echo "  IL bytecode recovery. See the full guide:"
+      echo "    ref: unity-il2cpp-reversing.md"
+    else
+      echo "  Proceed with Phase 2: bash scripts/decompile.sh <file>"
+    fi
     ;;
 esac

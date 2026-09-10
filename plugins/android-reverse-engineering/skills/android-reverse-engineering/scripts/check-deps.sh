@@ -100,6 +100,22 @@ else
   missing_optional+=("adb")
 fi
 
+# --- Optional: Il2CppDumper (for Unity IL2CPP games) ---
+if command -v Il2CppDumper &>/dev/null || command -v Il2CppDumper.exe &>/dev/null; then
+  echo "[OK] Il2CppDumper detected (optional — Unity IL2CPP reversing)"
+else
+  echo "[MISSING] Il2CppDumper not found (optional — needed for Unity IL2CPP game reversing)"
+  missing_optional+=("Il2CppDumper")
+fi
+
+# --- Optional: Ghidra (for IL2CPP binary analysis) ---
+if [[ -n "${GHIDRA_INSTALL_DIR:-}" ]] || command -v analyzeHeadless &>/dev/null; then
+  echo "[OK] Ghidra detected (optional)"
+else
+  echo "[MISSING] Ghidra not found (optional — for deep IL2CPP binary analysis)"
+  missing_optional+=("Ghidra")
+fi
+
 # --- Machine-readable summary ---
 echo
 if [[ ${#missing_required[@]} -gt 0 ]]; then
