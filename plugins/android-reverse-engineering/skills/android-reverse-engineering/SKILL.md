@@ -1,7 +1,7 @@
 ---
 name: android-reverse-engineering
-description: Decompile Android APK, XAPK, JAR, and AAR files using jadx or Fernflower/Vineflower. Reverse engineer Android apps, extract HTTP API endpoints (Retrofit, OkHttp, Volley), and trace call flows from UI to network layer. For Unity IL2CPP games, recover method bodies via headless Ghidra (pyghidra) + Il2CppDumper — full command-line pipeline, no GUI needed (NOT Cpp2IL, whose IL-recovery is a known unimplemented stub). Use when the user wants to decompile, analyze, or reverse engineer Android packages, find API endpoints, or follow call flows. 中文触发词：反编译APK、安卓逆向、提取API、分析安卓应用、反编译安卓、逆向工程、追踪调用链、提取接口、命令行反编译、无GUI反编译
-trigger: decompile APK|decompile XAPK|reverse engineer Android|extract API|analyze Android|jadx|fernflower|vineflower|follow call flow|decompile JAR|decompile AAR|Android reverse engineering|find API endpoints|unity il2cpp|libil2cpp|reverse unity game|ghidra headless|pyghidra|command line decompile|decompile without GUI|反编译APK|安卓逆向|提取API|分析安卓应用|逆向unity|命令行反编译|无GUI反编译
+description: Decompile Android APK, XAPK, JAR, and AAR files using jadx or Fernflower/Vineflower. Reverse engineer Android apps, extract HTTP API endpoints (Retrofit, OkHttp, Volley), and trace call flows from UI to network layer. For Unity IL2CPP games, recover method bodies via headless Ghidra (pyghidra) + Il2CppDumper — full command-line pipeline, no GUI needed — and extract Unity assets (scene hierarchy, prefab structure, serialized component values, textures, meshes, animations, audio) via UnityPy + AssetStudioMod (NOT Cpp2IL, whose IL-recovery is a known unimplemented stub). Use when the user wants to decompile, analyze, or reverse engineer Android packages, find API endpoints, follow call flows, or extract game assets. 中文触发词：反编译APK、安卓逆向、提取API、分析安卓应用、反编译安卓、逆向工程、追踪调用链、提取接口、命令行反编译、无GUI反编译、提取贴图、提取模型、提取场景、prefab层级
+trigger: decompile APK|decompile XAPK|reverse engineer Android|extract API|analyze Android|jadx|fernflower|vineflower|follow call flow|decompile JAR|decompile AAR|Android reverse engineering|find API endpoints|unity il2cpp|libil2cpp|reverse unity game|ghidra headless|pyghidra|command line decompile|decompile without GUI|extract assets|scene hierarchy|prefab|UnityPy|AssetStudio|extract texture|extract model|反编译APK|安卓逆向|提取API|分析安卓应用|逆向unity|命令行反编译|无GUI反编译|提取贴图|提取模型|提取场景|prefab层级
 ---
 
 # Android Reverse Engineering
@@ -12,8 +12,9 @@ Decompile Android APK/XAPK/JAR/AAR with jadx and Fernflower/Vineflower, trace ca
 
 - JDK 17+ (jadx / Fernflower)
 - JDK 21+ (Ghidra — required for Unity IL2CPP body recovery)
-- jadx, Ghidra 12+, Python 3 with: capstone, pyghidra, dnfile (`pip install capstone pyghidra dnfile`; after installing pyghidra run ONCE: `pyghidra --install-dir <GHIDRA_DIR>`)
+- jadx, Ghidra 12+, Python 3 with: capstone, pyghidra, dnfile, UnityPy (`pip install capstone pyghidra dnfile UnityPy`; after installing pyghidra run ONCE: `pyghidra --install-dir <GHIDRA_DIR>`)
 - Il2CppDumper (auto-downloaded from wklin8607/Il2CppDumper if missing — that fork supports metadata v39, incl. the new magic 0xFAB11BAF and Unity 6 builds)
+- AssetStudioMod CLI (aelurum fork, optional but recommended — the only reliable way to read STRIPPED MonoBehaviour serialized values, via `--assembly-folder` + Il2CppDumper's DummyDll)
 - Cpp2IL — only used for structure (stub DLLs); it does NOT recover bodies (see warning)
 
 All tool paths are resolved by the scripts via which / env vars, NOT hardcoded. Set JAVA_HOME explicitly per-phase because jadx wants JDK 17 and Ghidra wants JDK 21.
@@ -210,9 +211,33 @@ Bonus: debug/error strings often leak the ORIGINAL PROJECT's source tree — gre
         print(v)
     "
 
-### Phase U8: Unity assets (optional)
+### Phase U8: Unity assets — scene layout, prefab hierarchy, serialized values, media
 
-UnityPy / AssetRipper for textures, models, scenes, and serialized MonoBehaviour data.
+Code tells you WHAT the app can do; assets tell you what it IS CONFIGURED to do. Full details: references/unity-assets-extraction.md. Verified on an 864 MB data.unity3d (metadata v39 build): 10.7k GameObjects, 5.9k MonoBehaviours, 381 textures, 555 meshes, 332 animation clips, 79 audio clips.
+
+Extract data.unity3d first:
+
+    unzip -o -j "$APK" "assets/bin/Data/data.unity3d" -d "$WORK_DIR/apk-extracted"
+
+A) UnityPy quick route (scripts/extract_assets.py, pure CLI):
+
+    python3 "$SKILL_DIR/scripts/extract_assets.py" "$WORK_DIR/apk-extracted/data.unity3d" "$WORK_DIR/asset-out" inventory
+    # -> type counts + BuildSettings scene list + MonoBehaviour typetree availability
+    python3 "$SKILL_DIR/scripts/extract_assets.py" "$WORK_DIR/apk-extracted/data.unity3d" "$WORK_DIR/asset-out" extract --types Texture2D,TextAsset,Font --limit 200
+    # -> png/txt/ttf (also: AudioClip->wav best-effort, Mesh->obj best-effort; filter --name-like eagle)
+    python3 "$SKILL_DIR/scripts/extract_assets.py" "$WORK_DIR/apk-extracted/data.unity3d" "$WORK_DIR/asset-out" hierarchy
+    # -> per-scene GameObject tree with mounted components and parent/child links (hierarchy/*.json)
+
+B) AssetStudioMod CLI (aelurum fork) + DummyDll — the ONLY reliable route to STRIPPED MonoBehaviour serialized values (UnityPy read_typetree fails on them; 5883/5910 were stripped on the reference build):
+
+    gh release download --repo aelurum/AssetStudio --pattern "AssetStudioModCLI_net9_win64.zip"
+    AssetStudioModCLI.exe "$WORK_DIR/apk-extracted/data.unity3d" -m dump -t monoBehaviour       --assembly-folder "$WORK_DIR/il2cpp-output/DummyDll" -o "$WORK_DIR/asset-out/mb-dump"
+    # verified 5905/5910 dumped with real field names + values (volumes, thresholds, SKUs, PPtr refs)
+    # also: -t tex2d,mesh,audio,shader,font,textAsset / -m export for png/fbx/wav / -g sceneHierarchy
+
+Three-way cross-read for maximum fidelity: dump.cs (field layout) + hierarchy/*.json (where each component instance sits) + mb-dump/*.txt (what values each instance holds).
+
+Shader note: original ShaderLab/HLSL is NOT recoverable from a build — dumps give structure/property names only; effects must be re-inferred from SPIR-V or rewritten.
 
 ---
 
@@ -243,4 +268,5 @@ UnityPy / AssetRipper for textures, models, scenes, and serialized MonoBehaviour
 2. Bodies — decompiled/<Class>.c per-class C pseudocode from Ghidra headless, call sites annotated with real Class$$Method names (_INDEX.md lists all classes)
 3. ARM64 disasm — objdump/capstone of key functions with resolved callee names
 4. Strings — URLs / keys / constants from stringliteral.json (+ leaked original source paths)
-5. Architecture summary — module deps + call chains
+5. Assets — scene hierarchy JSON, MonoBehaviour serialized values with real field names, png/ttf/wav/obj media
+6. Architecture summary — module deps + call chains
