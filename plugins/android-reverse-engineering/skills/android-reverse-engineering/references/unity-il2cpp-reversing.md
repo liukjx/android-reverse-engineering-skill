@@ -9,7 +9,7 @@ Unity IL2CPP (Intermediate Language To C++) 把 C# 编译成原生 ARM64/x64 二
 3. 完整工作流
 4. 提取类元数据和方法名 (Il2CppDumper)
 5. 提取 Unity 资源 (AssetRipper / UnityPy)
-6. 分析 IL2CPP 二进制 (Ghidra) —— 拿到方法体的唯一路径
+6. 分析 IL2CPP 二进制 (Ghidra headless, 无 GUI) —— 拿到方法体的唯一路径
 7. Cpp2IL 的真实定位（只能拿结构，拿不到方法体）
 8. 常见保护与绕过
 
@@ -38,7 +38,9 @@ Unity IL2CPP (Intermediate Language To C++) 把 C# 编译成原生 ARM64/x64 二
 | Il2CppDumper | IL2CPP 元数据 dump（结构 + 符号表） | gh release download --repo wklin8607/Il2CppDumper （支持 metadata v39 的分支；Perfare 原版亦可） |
 | AssetRipper | Unity 资源提取（纹理/模型/场景） | gh release download --repo AssetRipper/AssetRipper |
 | UnityPy | Python 库，提取/修改 Unity 资源 | pip install UnityPy |
-| Ghidra 12+ | ARM64 二进制反编译 + 符号自动化（拿方法体） | 官网下载 zip |
+| Ghidra 12+ | ARM64 二进制反编译 + 符号自动化（拿方法体；headless 无 GUI） | 官网下载 zip |
+| pyghidra | Python 驱动 Ghidra API，无 GUI 批量反编译（见第 6 节） | pip install pyghidra，首次再 `pyghidra --install-dir <Ghidra目录>` |
+| dnfile | Python 读 DummyDll，自动提取 App 自有类型 | pip install dnfile |
 | JDK 21+ | Ghidra 依赖 | |
 | Cpp2IL | 仅结构（桩 DLL），拿不到方法体 | gh release download --repo SamboyCoding/Cpp2IL |
 
@@ -62,7 +64,7 @@ APK → unzip：
 | dump.cs | 最核心：所有类/字段/方法的文本定义（结构） |
 | DummyDll/ | 桩 DLL，dnSpy/ILSpy 浏览类结构 |
 | script.json | 完整符号表：地址 → Class$$Method |
-| il2cpp.h | C 结构体头文件（喂给 Ghidra） |
+| il2cpp.h | C 结构体头文件（仅 GUI struct 路线需要；headless 路线可跳过，字段偏移直接看 dump.cs） |
 | stringliteral.json | 所有字符串常量 |
 | ghidra_with_struct.py / il2cpp_header_to_ghidra.py | Ghidra 符号加载脚本（在 Il2CppDumper 目录里） |
 
@@ -92,22 +94,41 @@ dump.cs 含完整类定义：
 
 ---
 
-## 6. 分析 IL2CPP 二进制 (Ghidra) —— 拿到方法体的唯一路径
+## 6. 分析 IL2CPP 二进制 (Ghidra headless, 无 GUI) —— 拿到方法体的唯一路径
 
-⚠️ 这一步才是拿到"真实函数体"的地方。流程（参考 Cpp2IL 作者 BadMagic100 的 gist）：
+⚠️ 这一步才是拿到"真实函数体"的地方。**Ghidra 不是只能 GUI**——推荐 pyghidra 全命令行路线（Python 进程内直接驱动 Ghidra API）。已在一个 110 MB / 29.2 万符号 / metadata v39 的真实构建上完整验证：2779 个 App 自有方法全部反编译成功、零失败、约 40 分钟（64 GB RAM）。
+
+### 6.1 无头批量反编译（推荐）
+
+    export GHIDRA_INSTALL_DIR="<Ghidra 12.x 安装目录>"
+    export JAVA_HOME="<JDK 21 路径>"           # Ghidra 必须 JDK 21（jadx 才用 17）
+    # pyghidra 安装后需一次性初始化：
+    pip install pyghidra && pyghidra --install-dir "$GHIDRA_INSTALL_DIR"
+
+    # 1) 长跑前 10 秒抽检地址映射：capstone 反汇编看函数序言，
+    #    防止 .so / metadata 不配对白跑 40 分钟（binutils objdump 对这类 .so 常静默无输出，勿依赖）
+    python3 "$SKILL_DIR/scripts/verify_addresses.py" libil2cpp.so symbols_map.txt 6
+
+    # 2) 批量反编译：对 symbols_map.txt 每个地址建函数并反编译，每个类输出一个 .c
+    python3 "$SKILL_DIR/scripts/decompile_il2cpp_headless.py" \
+        libil2cpp.so symbols_map.txt ./decompiled <project-name>
+
+    # 3) 调用点注解：把伪代码里的 func_0x地址 还原成真实 Class$$Method（用全量 script.json）
+    python3 "$SKILL_DIR/scripts/annotate_decompiled.py" il2cpp-output/script.json ./decompiled
+
+内部原理（排错用）：`pyghidra.start()`（3.x 无 vm_args 参数；JVM 堆默认=物理内存 1/4）→ `open_program(..., analyze=False)`（跳过全量自动分析，省几十分钟）→ 对 symbols_map.txt 里每个 RVA 在 `imageBase(0x100000) + RVA` 处 createFunction → `DecompInterface().decompileFunction(f, 120, monitor)` → 按 `Class$$Method` 的类名分组写文件。注解步按同一规则换算地址；解析不到的调用目标是 il2cpp 运行时内部函数（C++ 侧，本就无托管符号），保留 func_0x 即可。
+
+速度与内存：约 0.4-1 秒/函数。8-16 GB 机器不要硬撑全量——缩小 symbols_map.txt（抽 300-500 个关键方法通常足够回答当前问题）。
+
+读代码姿势：`decompiled/<类名>.c` 是真实控制流的伪 C，变量名是 param_1/uVar 这类机器名；对照 dump.cs 同类字段偏移读——伪代码里的 `*(long *)(param_1 + 0x50)` 对应 dump.cs 里 0x50 偏移处的字段名。协程/async 会反编译成匿名状态机类 `ClassName.<MethodName>d__NN$$MoveNext`，真正的逻辑在 MoveNext 里。
+
+### 6.2 GUI 路线（仅需要交互浏览时用）
 
 1. 装 JDK 21 + Ghidra 12。
 2. 启动 Ghidra，New Project，Import libil2cpp.so（**先不选自动分析**，100MB+ 的 .so 自动分析很慢）。
 3. File → Parse C Code：先跑 Il2CppDumper 目录里的 il2cpp_header_to_ghidra.py 把 il2cpp.h 转成 il2cpp_ghidra.h，再 Parse 它（遇语法错误就把出错 struct 体注掉，后面用 Structure Editor 补）。
 4. Script Manager → 把 Il2CppDumper 目录加进脚本目录 → 跑 ghidra_with_struct.py（选 script.json）。
 5. 让 Ghidra 分析，Functions 窗口搜 ClassName$$Method → 右键 Decompile 看伪 C。
-
-协程/async 会出现成匿名状态机类 ClassName.<MethodName>d__NN$$MoveNext，真正的逻辑在 MoveNext 里。
-
-内存：Ghidra 分析 100MB+ libil2cpp.so 建议 ≥16GB RAM；8GB 大概率 OOM。缓解：
-- 设 -Xmx 但低于物理内存（如 8GB 机设 -Xmx6G）。
-- 只对你关心的函数逐个 Decompile，不全量分析。
-- 换 ≥16GB 的机器做全量。
 
 ---
 

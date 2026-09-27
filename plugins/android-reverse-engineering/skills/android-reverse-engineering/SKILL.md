@@ -1,7 +1,7 @@
 ---
 name: android-reverse-engineering
-description: Decompile Android APK, XAPK, JAR, and AAR files using jadx or Fernflower/Vineflower. Reverse engineer Android apps, extract HTTP API endpoints (Retrofit, OkHttp, Volley), and trace call flows from UI to network layer. For Unity IL2CPP games, recover method bodies via Ghidra + Il2CppDumper (NOT Cpp2IL, whose IL-recovery is a known unimplemented stub). Use when the user wants to decompile, analyze, or reverse engineer Android packages, find API endpoints, or follow call flows. 中文触发词：反编译APK、安卓逆向、提取API、分析安卓应用、反编译安卓、逆向工程、追踪调用链、提取接口
-trigger: decompile APK|decompile XAPK|reverse engineer Android|extract API|analyze Android|jadx|fernflower|vineflower|follow call flow|decompile JAR|decompile AAR|Android reverse engineering|find API endpoints|unity il2cpp|libil2cpp|reverse unity game|反编译APK|安卓逆向|提取API|分析安卓应用|逆向unity
+description: Decompile Android APK, XAPK, JAR, and AAR files using jadx or Fernflower/Vineflower. Reverse engineer Android apps, extract HTTP API endpoints (Retrofit, OkHttp, Volley), and trace call flows from UI to network layer. For Unity IL2CPP games, recover method bodies via headless Ghidra (pyghidra) + Il2CppDumper — full command-line pipeline, no GUI needed (NOT Cpp2IL, whose IL-recovery is a known unimplemented stub). Use when the user wants to decompile, analyze, or reverse engineer Android packages, find API endpoints, or follow call flows. 中文触发词：反编译APK、安卓逆向、提取API、分析安卓应用、反编译安卓、逆向工程、追踪调用链、提取接口、命令行反编译、无GUI反编译
+trigger: decompile APK|decompile XAPK|reverse engineer Android|extract API|analyze Android|jadx|fernflower|vineflower|follow call flow|decompile JAR|decompile AAR|Android reverse engineering|find API endpoints|unity il2cpp|libil2cpp|reverse unity game|ghidra headless|pyghidra|command line decompile|decompile without GUI|反编译APK|安卓逆向|提取API|分析安卓应用|逆向unity|命令行反编译|无GUI反编译
 ---
 
 # Android Reverse Engineering
@@ -12,8 +12,8 @@ Decompile Android APK/XAPK/JAR/AAR with jadx and Fernflower/Vineflower, trace ca
 
 - JDK 17+ (jadx / Fernflower)
 - JDK 21+ (Ghidra — required for Unity IL2CPP body recovery)
-- jadx, Ghidra 12+, Python 3 with capstone (pip install capstone)
-- Il2CppDumper (auto-downloaded from wklin8607/Il2CppDumper if missing — that fork supports metadata v39)
+- jadx, Ghidra 12+, Python 3 with: capstone, pyghidra, dnfile (`pip install capstone pyghidra dnfile`; after installing pyghidra run ONCE: `pyghidra --install-dir <GHIDRA_DIR>`)
+- Il2CppDumper (auto-downloaded from wklin8607/Il2CppDumper if missing — that fork supports metadata v39, incl. the new magic 0xFAB11BAF and Unity 6 builds)
 - Cpp2IL — only used for structure (stub DLLs); it does NOT recover bodies (see warning)
 
 All tool paths are resolved by the scripts via which / env vars, NOT hardcoded. Set JAVA_HOME explicitly per-phase because jadx wants JDK 17 and Ghidra wants JDK 21.
@@ -95,9 +95,23 @@ Key outputs:
 
 Note: this fork names the binary Il2CppDumper.dll (run via dotnet); Perfare's original ships Il2CppDumper.exe for Windows. Both work; the .dll + dotnet form is cross-platform.
 
+Gotchas proven in practice:
+- Output location: despite the output-dir argument, the dumper may write dump.cs/script.json/il2cpp.h/DummyDll NEXT TO ITSELF (the extracted/ folder). Check both locations and move the files.
+- The trailing "Press any key" ReadKey exception when run non-interactively is harmless — the outputs are already complete.
+- Keep WORK_DIR ASCII-only on Windows: non-ASCII (e.g. Chinese) paths have broken Ghidra/dotnet/objdump in practice. Use e.g. D:/tmp/<app>-re/.
+- il2cpp.h (often 100+ MB) is only needed for the Ghidra GUI struct route. The headless route (Phase U6) skips it entirely — read field offsets from dump.cs instead.
+
 ### Phase U3: Pre-filter the symbol table (script.json is huge)
 
-Only keep the app's own code + interesting SDK symbols:
+script.json holds EVERY managed method (engine + SDK + app, e.g. 292k entries). You only want the app's own code. Two ways:
+
+Preferred — derive app types automatically from DummyDll (no keyword tuning, nothing missed):
+
+    python3 "$SKILL_DIR/scripts/filter_symbols.py" "$WORK_DIR/il2cpp-output" "$WORK_DIR"
+    # reads DummyDll/Assembly-CSharp.dll (+ GAME_ASSEMBLIES list inside if the app ships more own assemblies)
+    # writes symbols_map.txt (hexaddr|Class$$Method), game_types.txt, game_methods.json
+
+Manual alternative — keyword filter when you already know the brand namespaces:
 
     python3 << 'PYEOF'
     import json
@@ -143,26 +157,39 @@ Gotchas proven on this build:
 - The address in dump.cs / script.json may be a tail-call stub (10 insns + b <far>). Disassemble the target to get the real body.
 - Callee bl targets inside script.json resolve to real Class$$Method names; targets NOT in it are il2cpp runtime internals — label them as such, do not invent names.
 - This gives you control flow you can annotate into pseudo-C# by hand (reliable for simple/medium methods; semantic-level for complex ones).
+- On Windows, binutils objdump may print NOTHING for these addresses (RX-segment VMA/file-offset skew, e.g. +0x4000). Use capstone with program-header-based offset conversion instead — `scripts/verify_addresses.py` does exactly that:
 
-### Phase U6: Ghidra — the ONLY body-recovery path
+    python3 "$SKILL_DIR/scripts/verify_addresses.py" "$WORK_DIR/apk-extracted/lib/arm64-v8a/libil2cpp.so" "$WORK_DIR/symbols_map.txt" 6
 
-Follow the Cpp2IL author's own guide (gist "Decompiling IL2CPP Games with Il2CppDumper and Ghidra"):
+### Phase U6: Ghidra — the ONLY body-recovery path (HEADLESS, no GUI needed)
 
+Ghidra is NOT GUI-only. The verified route is pyghidra (Python driving Ghidra's API in-process): open the .so, create functions at Il2CppDumper addresses, batch-decompile every app method, write one .c file per class. Proven end-to-end on a 110 MB libil2cpp.so / 292k symbols / metadata v39: **2779/2779 app methods decompiled, 0 failures, ~40 min on 64 GB RAM.**
+
+    export GHIDRA_INSTALL_DIR="<path/to/ghidra_12.x_PUBLIC>"
     export JAVA_HOME="<path/to/JDK-21>"          # Ghidra REQUIRES JDK 21
-    export PATH="$JAVA_HOME/bin:$PATH"
-    GHIDRA="$WORK_DIR/ghidra_12.x_PUBLIC"
-    # 1. Import the binary (NO auto-analysis — it's slow on a 100MB+ .so)
-    "$GHIDRA/support/analyzeHeadless" "$WORK_DIR/ghidra_project" "il2cpp_re"         -import "$WORK_DIR/apk-extracted/lib/arm64-v8a/libil2cpp.so" -noanalysis -overwrite
-    # 2. In Ghidra GUI: File -> Parse C Code, load il2cpp_ghidra.h (from il2cpp_header_to_ghidra.py)
-    # 3. Script Manager -> add Il2CppDumper folder -> run ghidra_with_struct.py (picks script.json)
-    # 4. Let Ghidra analyze; open Functions window, search "ClassName$$Method"
+    # one-time after pip install pyghidra:  pyghidra --install-dir "$GHIDRA_INSTALL_DIR"
+    python3 "$SKILL_DIR/scripts/decompile_il2cpp_headless.py" \
+        "$WORK_DIR/apk-extracted/lib/arm64-v8a/libil2cpp.so" \
+        "$WORK_DIR/symbols_map.txt" \
+        "$WORK_DIR/decompiled" <project-name>
 
-Memory: Ghidra on a 100 MB+ libil2cpp.so wants 16 GB+ RAM. On 8 GB it will likely OOM mid-analysis. Mitigations:
-- Set -Xmx high but under physical RAM (e.g. -Xmx6G on 8 GB).
-- Decompile only the functions you care about (right-click -> Decompile), not the whole binary.
-- Prefer a machine with >=16 GB for full analysis.
+What it does internally (for debugging): `pyghidra.start()` (NO vm_args param in pyghidra 3.x; JVM heap defaults to 1/4 physical RAM) -> `open_program(..., analyze=False)` (full auto-analysis is a waste here) -> for each hex address in symbols_map.txt: `createFunction` at `imageBase + RVA` (Ghidra's image base is 0x100000 for these ELF .so; script.json addresses are RVA) -> `DecompInterface().decompileFunction(f, 120, monitor)` -> group output by the class part of `Class$$Method`.
 
-Output: real C-level decompilation of each Class$$Method — this is what Cpp2IL cannot give you.
+BEFORE the long run, spend 10 s verifying the address map (catches wrong .so/metadata pairs):
+
+    python3 "$SKILL_DIR/scripts/verify_addresses.py" "$SO" "$WORK_DIR/symbols_map.txt"
+
+AFTER it finishes, resolve call targets — decompiled bodies call other methods as `func_0xADDR`; rewrite them to real names using the FULL script.json:
+
+    python3 "$SKILL_DIR/scripts/annotate_decompiled.py" "$WORK_DIR/il2cpp-output/script.json" "$WORK_DIR/decompiled"
+    # Ghidra addr = imageBase(0x100000) + RVA. On a real build this resolved 41,515 call sites;
+    # leftovers are il2cpp runtime internals (C++ side, no managed symbols) — expected.
+
+Timing/memory: ~0.4-1 s per function. On 8-16 GB machines, shrink symbols_map.txt instead of raising heap — decompiling 300-500 key methods is usually enough for a given question.
+
+GUI alternative (only for interactive browsing): `analyzeHeadless <proj> <name> -import <so> -noanalysis`, then in the GUI parse il2cpp_ghidra.h and run Il2CppDumper's ghidra_with_struct.py. The headless route above replaces all of that.
+
+Output: real C-level decompilation of each Class$$Method — this is what Cpp2IL cannot give you. Pair each .c file with the same class in dump.cs for field names/offsets (the decompiler shows raw offsets like `*(long *)(param_1 + 0x50)`; dump.cs tells you that 0x50 is e.g. `private string assetFilePath`).
 
 ### Phase U7: strings / constants (strongest signal)
 
@@ -172,6 +199,15 @@ Output: real C-level decompilation of each Class$$Method — this is what Cpp2IL
         v = it.get('value','')
         if 'http' in v or 'api' in v or 'key' in v or 'secret' in v:
             print(v[:200])
+    "
+
+Bonus: debug/error strings often leak the ORIGINAL PROJECT's source tree — grep for absolute .cs paths (skips PackageCache/Library to keep only app-authored files):
+
+    python3 -c "
+    import json
+    vals = (it.get('value','') for it in json.load(open('<work-dir>/il2cpp-output/stringliteral.json')))
+    for v in sorted({v for v in vals if v.endswith('.cs') and '/Users/' in v and 'PackageCache' not in v and 'Library/' not in v}):
+        print(v)
     "
 
 ### Phase U8: Unity assets (optional)
@@ -204,7 +240,7 @@ UnityPy / AssetRipper for textures, models, scenes, and serialized MonoBehaviour
 ## Output
 
 1. Structure — dump.cs (classes/fields/signatures), source/ skeleton from Cpp2IL
-2. Bodies — Ghidra decompilation of target functions (the real logic)
-3. ARM64 disasm — objdump of key functions with resolved callee names
-4. Strings — URLs / keys / constants from stringliteral.json
+2. Bodies — decompiled/<Class>.c per-class C pseudocode from Ghidra headless, call sites annotated with real Class$$Method names (_INDEX.md lists all classes)
+3. ARM64 disasm — objdump/capstone of key functions with resolved callee names
+4. Strings — URLs / keys / constants from stringliteral.json (+ leaked original source paths)
 5. Architecture summary — module deps + call chains

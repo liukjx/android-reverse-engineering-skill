@@ -1,13 +1,25 @@
 {
   "name": "android-reverse-engineering",
-  "version": "1.5.0",
-  "description": "Decompile Android APK/JAR/AAR with jadx, trace call flows through libraries, and document extracted APIs.",
+  "version": "1.6.0",
+  "description": "Decompile Android APK/JAR/AAR with jadx, trace call flows through libraries, and document extracted APIs. Unity IL2CPP games: headless Ghidra (pyghidra) + Il2CppDumper command-line pipeline recovers real method bodies as per-class C pseudocode, no GUI needed.",
   "author": {
     "name": "Simone Avogadro"
   },
   "repository": "https://github.com/SimoneAvogadro/android-reverse-engineering-skill",
   "license": "Apache-2.0",
-  "keywords": ["android", "reverse-engineering", "apk", "jadx", "decompile", "api-extraction"],
+  "keywords": [
+    "android",
+    "reverse-engineering",
+    "apk",
+    "jadx",
+    "decompile",
+    "api-extraction",
+    "unity",
+    "il2cpp",
+    "ghidra",
+    "headless",
+    "libil2cpp"
+  ],
   "skills": "./skills/",
   "commands": "./commands/"
 }
