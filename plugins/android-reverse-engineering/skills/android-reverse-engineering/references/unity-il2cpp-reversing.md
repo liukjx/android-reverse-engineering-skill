@@ -116,7 +116,15 @@ dump.cs 含完整类定义：
     # 3) 调用点注解：把伪代码里的 func_0x地址 还原成真实 Class$$Method（用全量 script.json）
     python3 "$SKILL_DIR/scripts/annotate_decompiled.py" il2cpp-output/script.json ./decompiled
 
+    # 4) 字段偏移注解：*(long*)(param_1 + 0x50) -> /*this.类名.字段名*/（用 dump.cs 的字段偏移表）
+    python3 "$SKILL_DIR/scripts/annotate_fields.py" il2cpp-output/dump.cs ./decompiled
+
 内部原理（排错用）：`pyghidra.start()`（3.x 无 vm_args 参数；JVM 堆默认=物理内存 1/4）→ `open_program(..., analyze=False)`（跳过全量自动分析，省几十分钟）→ 对 symbols_map.txt 里每个 RVA 在 `imageBase(0x100000) + RVA` 处 createFunction → `DecompInterface().decompileFunction(f, 120, monitor)` → 按 `Class$$Method` 的类名分组写文件。注解步按同一规则换算地址；解析不到的调用目标是 il2cpp 运行时内部函数（C++ 侧，本就无托管符号），保留 func_0x 即可。
+
+注解后仍会看到的"0x 噪声"及原因（正常现象，不是脚本没处理到位）：
+- 部分调用仍是 `func_0x..`：il2cpp C++ 运行时内部函数（GC/codegen），本就无符号
+- `PTR_DAT_xxx / bRam.. / cRam..`：Ghidra 对静态字段存储/元数据指针的自动命名；反复出现的 `if ((bRam.. & 1) == 0) { func_0x..; bRam.. = 1; }` 是 IL2CPP 类型初始化 guard 惯用语，可直接忽略
+- `uVar3 / lVar5` 这类变量名：反编译器的局部变量命名，伪 C 的固有产物；**不存在**还原回真实 C# 变量名的路线
 
 速度与内存：约 0.4-1 秒/函数。8-16 GB 机器不要硬撑全量——缩小 symbols_map.txt（抽 300-500 个关键方法通常足够回答当前问题）。
 

@@ -186,6 +186,17 @@ AFTER it finishes, resolve call targets — decompiled bodies call other methods
     # Ghidra addr = imageBase(0x100000) + RVA. On a real build this resolved 41,515 call sites;
     # leftovers are il2cpp runtime internals (C++ side, no managed symbols) — expected.
 
+Then annotate FIELD OFFSETS with real names — decompiled bodies read fields as `*(long*)(param_1 + 0x50)`; dump.cs knows every field's offset, so map them back:
+
+    python3 "$SKILL_DIR/scripts/annotate_fields.py" "$WORK_DIR/il2cpp-output/dump.cs" "$WORK_DIR/decompiled"
+    # -> *(long*)(param_1 + 0x50 /*this.DLCManager.assetFilePath*/)   (5,313 sites annotated on the reference build)
+    # conservative: only annotates param_1 (the this pointer) of instance methods, only on offset hit
+
+What noise REMAINS after both passes (and why it is normal, not a bug):
+- `func_0x...` on some calls = il2cpp C++ runtime internals (GC, codegen helpers) — no symbols exist for them
+- `PTR_DAT_xxx / bRam... / cRam...` = Ghidra auto-names for static-field storage & metadata pointers; the recurring `if ((bRam.. & 1) == 0) { func_0x..; bRam.. = 1; }` idiom is the IL2CPP one-time type-init guard — ignorable
+- `uVar3 / lVar5 / puVar1` = decompiler-local names — inherent to pseudocode; there is NO route back to real C# variable names
+
 Timing/memory: ~0.4-1 s per function. On 8-16 GB machines, shrink symbols_map.txt instead of raising heap — decompiling 300-500 key methods is usually enough for a given question.
 
 GUI alternative (only for interactive browsing): `analyzeHeadless <proj> <name> -import <so> -noanalysis`, then in the GUI parse il2cpp_ghidra.h and run Il2CppDumper's ghidra_with_struct.py. The headless route above replaces all of that.
