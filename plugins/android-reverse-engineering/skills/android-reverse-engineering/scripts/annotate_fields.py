@@ -72,7 +72,10 @@ klass_map = {0x0: "Il2CppObject.klass", 0x8: "Il2CppObject.monitor"}
 
 total_files = total_hits = 0
 for fp in sorted(glob.glob(os.path.join(OUTDIR, "*.c"))):
-    cls_name = os.path.basename(fp)[:-2]
+    raw = os.path.basename(fp)[:-2]           # e.g. "ATiStudios.AI.Clients.OpenAIAudioClient"
+    # namespaces prepend the simple class name in the filename; C# simple names
+    # contain no dots, so try exact (global-ns) first, then last segment
+    cls_name = raw if raw in classes else raw.rsplit(".", 1)[-1]
     if cls_name not in classes:
         continue
     fmap = field_map_for(cls_name)
