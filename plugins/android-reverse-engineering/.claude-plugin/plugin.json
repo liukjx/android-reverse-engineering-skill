@@ -1,6 +1,6 @@
 {
   "name": "android-reverse-engineering",
-  "version": "1.7.1",
+  "version": "1.8.0",
   "description": "Decompile Android APK/JAR/AAR with jadx, trace call flows, and document extracted APIs. Unity IL2CPP: headless Ghidra (pyghidra) + Il2CppDumper pipeline recovers method bodies; UnityPy + AssetStudioMod extract scene hierarchy, serialized component values, textures, meshes, animations, audio.",
   "author": {
     "name": "Simone Avogadro"

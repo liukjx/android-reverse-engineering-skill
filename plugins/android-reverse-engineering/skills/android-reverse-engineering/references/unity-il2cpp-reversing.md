@@ -54,9 +54,18 @@ APK → unzip：
 - assets/bin/Data/Managed/Metadata/global-metadata.dat —— 类/方法名索引（~15 MB）
 - assets/bin/Data/data.unity3d     —— 场景/资源包（AssetRipper 用）
 
+**OBB 扩展包**（大型游戏常见）：APK 同目录的 `main.<版本>.<包名>.obb` 是纯 ZIP，
+里面往往是**完整版 data.unity3d**、Addressables 内容包（assets/aa/Android/*.bundle +
+catalog.bin）、数据库（*.db）。fingerprint.sh 会自动探测并提示；务必一并解压：
+    unzip -o -q "$OBB" -d "$WORK_DIR/obb-extracted"
+注意 APK 和 OBB 里可能各有一份 data.unity3d（APK 是引导版，OBB 是完整版），
+inventory 要两侧都跑。若 native 库里有 libsqlcipher.so，*.db 是 SQLCipher 加密的，
+密钥嵌在代码里——去反编译产物里找。
+
 ### Phase U2: 运行 Il2CppDumper
     dotnet Il2CppDumper.dll libil2cpp.so global-metadata.dat ./il2cpp-output
 （wklin8607 分支产物是 Il2CppDumper.dll，用 dotnet 跑；Perfare 原版是 Il2CppDumper.exe，Windows 用）
+（输出实际落在 dumper 自己的目录里而非绝对路径参数目录，注意搬运）
 
 ### Phase U3: 解析输出
 | 文件 | 说明 |
@@ -80,7 +89,8 @@ dump.cs 含完整类定义：
 技巧：
 - 定位类：grep "^public class .* : MonoBehaviour" dump.cs
 - 定位方法：grep "public .*(" dump.cs
-- 只看游戏代码：Assembly-CSharp.dll 区段
+- 只看游戏代码：先 ls DummyDll/ 确认自有程序集（可能是多个，如 Mondly 的 39 个
+  ATiStudios.*.dll），再用 filter_symbols.py --assemblies "A.dll,B.*.dll" 过滤
 - 字符串：jq '.[]."value"' stringliteral.json | sort -u
 
 ### Phase U5: Unity 资源提取（可选）

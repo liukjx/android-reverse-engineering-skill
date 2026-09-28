@@ -13,7 +13,7 @@ set -euo pipefail
 
 usage() {
   cat <<EOF
-Usage: fingerprint.sh <file.apk|file.xapk>
+Usage: fingerprint.sh <file.apk|file.xapk> [file.obb]
 
 Prints a one-screen summary:
   * mobile framework (with rationale)
@@ -21,6 +21,12 @@ Prints a one-screen summary:
   * obfuscation indicator
   * native libraries (consolidated across split APKs)
   * notable third-party SDKs found in assets/
+  * OBB expansion pack contents (auto-detected next to the APK, or passed
+    as the 2nd arg): Unity data.unity3d, Addressables bundles, media
+
+Unity games often ship most content in a .obb (Android expansion file)
+sibling to the APK — pass it (or keep it next to the APK) so the summary
+covers the whole app, not just the APK.
 EOF
   exit 0
 }
@@ -28,6 +34,13 @@ EOF
 [[ $# -lt 1 || "$1" == "-h" || "$1" == "--help" ]] && usage
 INPUT="$1"
 [[ ! -f "$INPUT" ]] && { echo "File not found: $INPUT" >&2; exit 1; }
+
+# OBB expansion: explicit 2nd arg, else auto-detect next to the APK
+OBB="${2:-}"
+if [[ -z "$OBB" ]]; then
+  OBB="$(find "$(dirname -- "$INPUT")" -maxdepth 2 -name '*.obb' -type f 2>/dev/null | head -1 || true)"
+fi
+[[ -n "$OBB" && ! -f "$OBB" ]] && { echo "OBB not found: $OBB" >&2; OBB=""; }
 
 TMP="$(mktemp -d -t apkfp.XXXXXX)"
 trap 'rm -rf "$TMP"' EXIT
@@ -188,6 +201,25 @@ else
 fi
 
 # ----------------------------------------------------------------------
+# OBB expansion pack contents (Unity games put the bulk here)
+# ----------------------------------------------------------------------
+OBB_SECTION=""
+if [[ -n "$OBB" ]]; then
+  OBB_LISTING="$TMP/obb_listing.txt"
+  unzip -l -- "$OBB" 2>/dev/null | awk '{print $NF}' > "$OBB_LISTING" || true
+  obb_bundles=$(grep -cE '\.bundle$' "$OBB_LISTING" || true)
+  obb_unity3d=$(grep -E 'assets/bin/Data/data\.unity3d$' "$OBB_LISTING" | head -1 || true)
+  obb_has_catalog=$(grep -q 'assets/aa/catalog\.bin' "$OBB_LISTING" && echo yes || echo no)
+  obb_db=$(grep -E '\.(db|sqlite3?)$' "$OBB_LISTING" | head -3 || true)
+  OBB_SECTION="yes"
+  echo "OBB expansion:    $(basename -- "$OBB") ($(du -h -- "$OBB" 2>/dev/null | cut -f1))"
+  [[ -n "$obb_unity3d" ]] && echo "  Unity data.unity3d present — main asset file lives in the OBB (extract BOTH APK and OBB)"
+  [[ "$obb_has_catalog" == "yes" ]] && echo "  Unity Addressables: catalog.bin + $obb_bundles asset bundles (content packs)"
+  [[ -n "$obb_db" ]] && { echo "  databases:"; echo "$obb_db" | sed 's/^/    /'; }
+  echo
+fi
+
+# ----------------------------------------------------------------------
 # Summary
 # ----------------------------------------------------------------------
 echo "=== APK Fingerprint: $(basename "$INPUT") ==="
@@ -241,6 +273,12 @@ case "$FRAMEWORK" in
       echo "  ⚠️  Unity IL2CPP game detected! Java decompilation (jadx) will"
       echo "  only show Unity engine wrapper code. Real game logic is in"
       echo "  libil2cpp.so + global-metadata.dat."
+      if [[ -n "$OBB_SECTION" ]]; then
+        echo ""
+        echo "  ⚠️  OBB expansion present: extract it too — it usually carries the"
+        echo "  FULL data.unity3d (scenes/values) and Addressables content packs:"
+        echo "    unzip -o \"\$OBB\" -d obb-extracted"
+      fi
       echo ""
       echo "  Use Il2CppDumper to recover class/method structure:"
       echo "    gh release download --repo Perfare/Il2CppDumper --pattern '*win*'"

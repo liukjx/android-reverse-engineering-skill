@@ -82,7 +82,25 @@ dump 输出形如：
    → 三者合起来就是"某个功能在成品里的完整配置"：例如 DLCManager 的 sku/assetFileName、
    手势检测阈值、音频混音参数，全部可直接读出。
 
-## 4. 参考
+## 4. OBB 扩展包与 Addressables（大型游戏必备）
+
+Google Play / 侧载的大游戏常把主体内容放在 APK 同目录的 `main.<版本>.<包名>.obb`
+（本质是 ZIP）。典型布局（Mondly VR 实测）：
+
+    assets/bin/Data/data.unity3d      —— 完整版主资产（APK 里那份是引导版，场景清单可能在任一侧，inventory 两侧都跑）
+    assets/aa/Android/*.bundle        —— Unity Addressables 内容包（animals/space/...）
+    assets/aa/catalog.bin + settings.json —— Addressables 目录
+    assets/app.db, content.sqlite     —— 数据库（若 native 库含 libsqlcipher.so 则为 SQLCipher 加密，
+                                          密钥嵌在代码里，去反编译产物/decompiled 里搜 sqlcipher/openkey）
+
+- 解包：`unzip -o -q "$OBB" -d obb-extracted`；fingerprint.sh 会自动探测 OBB 并提示
+- 单个 .bundle 就是独立 Unity 资产文件：UnityPy / extract_assets.py / AssetStudioMod
+  直接指向 .bundle 路径即可提取（实测：animals bundle → 鳄鱼/牛/鸡/牧羊犬贴图数秒导出）
+- MonoBehaviour 序列化值对 OBB 侧同样有效：AssetStudioMod 同样 `--assembly-folder DummyDll`
+  跑一遍 OBB 的 data.unity3d（实测 12,807/12,807 成功）
+
+## 5. 参考
 - UnityPy: https://github.com/K0lb3/UnityPy
 - AssetStudioMod (CLI fork): https://github.com/aelurum/AssetStudio
 - AssetRipper（GUI 全量导出工程）: https://github.com/AssetRipper/AssetRipper
+- SQLCipher: https://github.com/sqlcipher/sqlcipher

@@ -81,42 +81,56 @@ with pyghidra.open_program(os.path.abspath(BINARY), project_location=PROJ_DIR,
         prog.endTransaction(tx, True)
     print(f"[+] functions: created={ok} failed={fail} ({time.time()-t0:.0f}s)", flush=True)
 
-    # pass 2: decompile each target
+    # pass 2: decompile each target, writing each class file as soon as
+    # its last method is done (interrupt-safe, progress visible on disk)
     ifc = DecompInterface()
     ifc.openProgram(prog)
     by_class = {}
+    remaining = {}
+    for a, name in syms.items():
+        cls = name.split("/")[0].split("$$")[0].replace("::", "_")
+        remaining[cls] = remaining.get(cls, 0) + 1
+    badch = re.compile(r'[<>:"/\\|?*]')
     good = bad = 0
     total = len(syms)
-    for i, (a, name) in enumerate(syms.items()):
-        f = funcs.get(a)
-        if f is None:
-            continue
-        try:
-            res = ifc.decompileFunction(f, 120, mon)
-            if res.decompileCompleted() and res.getDecompiledFunction() is not None:
-                code = res.getDecompiledFunction().getC()
-                cls = name.split("/")[0].split("$$")[0].replace("::", "_")
-                by_class.setdefault(cls, []).append((name, f.getEntryPoint(), code))
-                good += 1
-            else:
-                bad += 1
-        except Exception:
-            bad += 1
-        if i % 200 == 0:
-            print(f"    [{i}/{total}] ok={good} fail={bad} ({time.time()-t0:.0f}s)", flush=True)
 
-    print(f"[+] decompiled {good}, failed {bad} ({time.time()-t0:.0f}s)", flush=True)
-
-    # pass 3: one .c file per class
-    badch = re.compile(r'[<>:"/\\|?*]')
-    for cls, items in by_class.items():
+    def flush_class(cls):
+        items = by_class.pop(cls, [])
+        if not items:
+            return
         fn = badch.sub("_", cls) or "_global"
         with open(os.path.join(OUT, fn + ".c"), "w", encoding="utf-8") as fh:
             fh.write(f"// class: {cls}\n// {len(items)} methods, Ghidra headless decompilation\n\n")
             for name, ep, code in items:
                 fh.write(f"//==== {name} @ {ep} ====\n{code}\n\n")
 
+    for i, (a, name) in enumerate(syms.items()):
+        f = funcs.get(a)
+        if f is None:
+            continue
+        cls = name.split("/")[0].split("$$")[0].replace("::", "_")
+        try:
+            res = ifc.decompileFunction(f, 120, mon)
+            if res.decompileCompleted() and res.getDecompiledFunction() is not None:
+                code = res.getDecompiledFunction().getC()
+                by_class.setdefault(cls, []).append((name, f.getEntryPoint(), code))
+                good += 1
+            else:
+                bad += 1
+        except Exception:
+            bad += 1
+        remaining[cls] -= 1
+        if remaining[cls] <= 0:
+            flush_class(cls)
+        if i % 500 == 0:
+            print(f"    [{i}/{total}] ok={good} fail={bad} ({time.time()-t0:.0f}s)", flush=True)
+
+    for cls in list(by_class.keys()):   # classes whose methods all failed
+        flush_class(cls)
+
+    print(f"[+] decompiled {good}, failed {bad} ({time.time()-t0:.0f}s)", flush=True)
+
     json.dump({"targets": total, "functions_created": ok, "decompiled": good,
-               "failed": bad, "classes": len(by_class), "seconds": round(time.time()-t0)},
+               "failed": bad, "classes": len(remaining), "seconds": round(time.time()-t0)},
               open(os.path.join(OUT, "_stats.json"), "w"), indent=1)
-    print(f"[done] {len(by_class)} class files -> {OUT}", flush=True)
+    print(f"[done] {len(remaining)} classes -> {OUT}", flush=True)

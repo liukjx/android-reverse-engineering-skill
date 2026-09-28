@@ -71,11 +71,22 @@ So: Phases U2-U3 give you structure; Phase U6 (Ghidra) gives you bodies. Do not 
 ### Phase U1: Extract key files
 
     APK="<path/to/app.apk>"
-    WORK_DIR="<work-dir>"
+    WORK_DIR="<work-dir>"            # ASCII-only path on Windows (non-ASCII breaks dotnet/ghidra/objdump)
     mkdir -p "$WORK_DIR/apk-extracted"
     unzip -o "$APK" "lib/arm64-v8a/libil2cpp.so" -d "$WORK_DIR/apk-extracted"
     unzip -o "$APK" "assets/bin/Data/Managed/Metadata/global-metadata.dat" -d "$WORK_DIR/apk-extracted"
     unzip -o "$APK" "assets/bin/Data/data.unity3d" -d "$WORK_DIR/apk-extracted" 2>/dev/null
+
+OBB expansion packs (Google Play / Quest sideload layouts): large Unity games ship the
+FULL data.unity3d + Addressables bundles + databases in a sibling .obb (a plain ZIP).
+fingerprint.sh auto-detects it; extract it too when present:
+
+    OBB="<path/to/main.<ver>.<pkg>.obb>"     # or: find "$(dirname "$APK")" -name '*.obb'
+    unzip -o -q "$OBB" -d "$WORK_DIR/obb-extracted"
+    # the bigger data.unity3d is usually at obb-extracted/assets/bin/Data/data.unity3d
+    # Addressables content packs: obb-extracted/assets/aa/Android/*.bundle + catalog.bin
+    # watch for *.db/*.sqlite — if libsqlcipher.so is among native libs, they are
+    # SQLCipher-encrypted; the key is embedded in code (find it in the decompiled output)
 
 ### Phase U2: Il2CppDumper (structure: signatures, symbol table, strings)
 
@@ -106,11 +117,14 @@ Gotchas proven in practice:
 
 script.json holds EVERY managed method (engine + SDK + app, e.g. 292k entries). You only want the app's own code. Two ways:
 
-Preferred — derive app types automatically from DummyDll (no keyword tuning, nothing missed):
+Preferred — derive app types automatically from DummyDll. Multi-assembly apps are common
+(Mondly VR: 39 `ATiStudios.*.dll` + Assembly-CSharp; DreamSpace: Assembly-CSharp only) —
+pass glob patterns, `ls DummyDll/` first to see what exists:
 
-    python3 "$SKILL_DIR/scripts/filter_symbols.py" "$WORK_DIR/il2cpp-output" "$WORK_DIR"
-    # reads DummyDll/Assembly-CSharp.dll (+ GAME_ASSEMBLIES list inside if the app ships more own assemblies)
-    # writes symbols_map.txt (hexaddr|Class$$Method), game_types.txt, game_methods.json
+    python3 "$SKILL_DIR/scripts/filter_symbols.py" "$WORK_DIR/il2cpp-output" "$WORK_DIR" \
+        --assemblies "Assembly-CSharp.dll,ATiStudios.*.dll"
+    # reads the matched DummyDll assemblies, writes symbols_map.txt (hexaddr|Class$$Method),
+    # game_types.txt, game_methods.json (engine/SDK dlls are excluded by prefix fallback)
 
 Manual alternative — keyword filter when you already know the brand namespaces:
 
@@ -226,9 +240,12 @@ Bonus: debug/error strings often leak the ORIGINAL PROJECT's source tree — gre
 
 Code tells you WHAT the app can do; assets tell you what it IS CONFIGURED to do. Full details: references/unity-assets-extraction.md. Verified on an 864 MB data.unity3d (metadata v39 build): 10.7k GameObjects, 5.9k MonoBehaviours, 381 textures, 555 meshes, 332 animation clips, 79 audio clips.
 
-Extract data.unity3d first:
+Extract data.unity3d first — and note there may be TWO of them when an OBB is present
+(the APK ships a bootstrap copy; the OBB ships the full one; scenes may live in either —
+run inventory on BOTH, e.g. Mondly: scene list in the APK-side file, bulk content in the OBB):
 
     unzip -o -j "$APK" "assets/bin/Data/data.unity3d" -d "$WORK_DIR/apk-extracted"
+    [ -f "$OBB" ] && unzip -o -q "$OBB" -d "$WORK_DIR/obb-extracted"
 
 A) UnityPy quick route (scripts/extract_assets.py, pure CLI):
 
@@ -247,6 +264,13 @@ B) AssetStudioMod CLI (aelurum fork) + DummyDll — the ONLY reliable route to S
     # also: -t tex2d,mesh,audio,shader,font,textAsset / -m export for png/fbx/wav / -g sceneHierarchy
 
 Three-way cross-read for maximum fidelity: dump.cs (field layout) + hierarchy/*.json (where each component instance sits) + mb-dump/*.txt (what values each instance holds).
+
+Addressables content packs (OBB `assets/aa/Android/*.bundle`, catalog.bin + settings.json):
+each .bundle is a standalone Unity asset file — point UnityPy/extract_assets.py or
+AssetStudioMod directly AT the .bundle path to pull its textures/meshes/MonoBehaviours
+(verified: animals bundle -> crocodile/cow/chicken/sheepdog textures in seconds).
+Encrypted *.db: if libsqlcipher.so is present the databases are SQLCipher-encrypted;
+recover the passphrase from the decompiled code, then open with sqlcipher CLI.
 
 Shader note: original ShaderLab/HLSL is NOT recoverable from a build — dumps give structure/property names only; effects must be re-inferred from SPIR-V or rewritten.
 
