@@ -206,9 +206,20 @@ Then annotate FIELD OFFSETS with real names — decompiled bodies read fields as
     # -> *(long*)(param_1 + 0x50 /*this.DLCManager.assetFilePath*/)   (5,313 sites annotated on the reference build)
     # conservative: only annotates param_1 (the this pointer) of instance methods, only on offset hit
 
-What noise REMAINS after both passes (and why it is normal, not a bug):
+Finally annotate METADATA SLOTS — strings, class references and generic-method refs arrive as
+`uRam/cRam/bRam/PTR_DAT_000000000XXXXX` pointer slots plus bare `0x0fXXXXXX` args in init guards:
+
+    python3 "$SKILL_DIR/scripts/annotate_metadata.py" "$WORK_DIR/il2cpp-output/script.json" "$WORK_DIR/decompiled"
+    # uses script.json ScriptString/ScriptMetadata/ScriptMetadataMethod (the latter two are
+    # otherwise unused); appends /*"literal"*/, /*Class_TypeInfo*/, /*&Class$$Method*/ comments.
+    # Mondly build: ~340k slots annotated across 1,185 files (script is idempotent).
+
+What noise REMAINS after all three passes (and why it is normal, not a bug):
 - `func_0x...` on some calls = il2cpp C++ runtime internals (GC, codegen helpers) — no symbols exist for them
-- `PTR_DAT_xxx / bRam... / cRam...` = Ghidra auto-names for static-field storage & metadata pointers; the recurring `if ((bRam.. & 1) == 0) { func_0x..; bRam.. = 1; }` idiom is the IL2CPP one-time type-init guard — ignorable
+- static-field storage bytes (`.bss` cRam/bRam/iRam slots NOT resolved by annotate_metadata) have no
+  static mapping in IL2CPP metadata — but after slot annotation they are surrounded by readable
+  context (the recurring `if ((bRam.. & 1) == 0) {...}` idiom is the one-time class-init guard for
+  the /*X_TypeInfo*/ class named in the same block)
 - `uVar3 / lVar5 / puVar1` = decompiler-local names — inherent to pseudocode; there is NO route back to real C# variable names
 
 Timing/memory: ~0.4-1 s per function. On 8-16 GB machines, shrink symbols_map.txt instead of raising heap — decompiling 300-500 key methods is usually enough for a given question.
