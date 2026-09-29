@@ -71,3 +71,52 @@ for fp in sorted(glob.glob(os.path.join(outdir, "*.c"))):
         files_hit += 1
 
 print(f"[+] annotated {total} metadata slots across {files_hit} files")
+
+# ---------------- pass 2: .bss 槽归属推断（交叉引用 + 守卫模式） ----------------
+# 未被元数据表覆盖的 Ram 槽 = .bss 运行时存储：类初始化标志 / 静态字段 / 运行时全局。
+# 元数据无映射，但可通过引用推断：
+#   - 单类引用 + 守卫模式（(X & 1) == 0 ... X = 1）  -> /*<类>.init-flag*/
+#   - 单类引用 + 其他用法                            -> /*<类>.static*/
+#   - 大量文件引用（>20）                            -> /*il2cpp-runtime-global*/
+#   - 少量文件引用                                   -> /*shared: <类A|类B>*/
+GUARD_RE = re.compile(r'\((?:[a-z]{1,2}Ram|PTR_DAT_)([0-9a-f]{6,16})\s*&\s*1\)\s*==\s*0')
+FLG_RE  = re.compile(r'\b[a-z]{1,2}Ram([0-9a-f]{6,16})\s*=\s*(?:1|\'\\x01\'|\'\\0*1\')')
+TOK2_RE = re.compile(r'\b([a-z]{1,2}Ram|PTR_DAT_)([0-9a-f]{6,16})\b(?!/\*)')
+
+owner = {}   # addr -> {"files": [类名...], "guard": bool}
+for fp in sorted(glob.glob(os.path.join(outdir, "*.c"))):
+    cls = os.path.basename(fp)[:-2].rsplit(".", 1)[-1]
+    src = open(fp, encoding="utf-8", errors="ignore").read()
+    for mo in GUARD_RE.finditer(src):
+        owner.setdefault(int(mo.group(1), 16), {"files": [], "guard": False})["guard"] = True
+    for mo in FLG_RE.finditer(src):
+        owner.setdefault(int(mo.group(1), 16), {"files": [], "guard": False})["guard"] = True
+    for mo in TOK2_RE.finditer(src):
+        owner.setdefault(int(mo.group(2), 16), {"files": [], "guard": False})["files"].append(cls)
+
+t2 = f2 = 0
+for fp in sorted(glob.glob(os.path.join(outdir, "*.c"))):
+    cls = os.path.basename(fp)[:-2].rsplit(".", 1)[-1]
+    src = open(fp, encoding="utf-8", errors="ignore").read()
+
+    def sub2(mo):
+        global t2, f2
+        addr = int(mo.group(2), 16)
+        info = owner.get(addr)
+        if not info:
+            return mo.group(0)
+        files = sorted(set(info["files"]))
+        if len(files) > 20:
+            label = "il2cpp-runtime-global"
+        elif len(files) == 1:
+            label = f"{files[0]}.{'init-flag' if info['guard'] else 'static'}"
+        else:
+            label = f"shared-{'init-flag' if info['guard'] else 'static'}:{'|'.join(files[:4])}"
+        t2 += 1
+        return f"{mo.group(0)}/*{label}*/"
+
+    out = TOK2_RE.sub(sub2, src)
+    if out != src:
+        open(fp, "w", encoding="utf-8").write(out)
+        f2 += 1
+print(f"[+] pass2: {t2} .bss slots tagged across {f2} files")
