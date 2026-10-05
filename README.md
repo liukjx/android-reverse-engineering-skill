@@ -11,6 +11,7 @@ A Claude Code skill that decompiles Android APK/XAPK/JAR/AAR files and **extract
 ## Table of Contents
 
 - [What it does](#what-it-does)
+- [Engine-first triage](#engine-first-triage)
 - [Requirements](#requirements)
 - [Installation](#installation)
 - [Usage](#usage)
@@ -31,6 +32,33 @@ A Claude Code skill that decompiles Android APK/XAPK/JAR/AAR files and **extract
 | **Trace call flows** | From Activities/Fragments through ViewModels and repositories down to HTTP calls |
 | **Analyze structure** | Manifest, packages, architecture patterns |
 | **Handle obfuscation** | R8-resistant path/URL extraction plus strategies for navigating ProGuard/R8 output |
+| **Unity IL2CPP games** | Structure via Il2CppDumper, real method bodies via headless Ghidra, assets via UnityPy + AssetStudioMod |
+| **Unreal Engine 4/5 games** | Full class/function/property API rebuilt from reflected `Z_Construct_*` symbols (parameter names included), pak container parsing that works even when the data section is AES-encrypted, and method bodies via headless Ghidra |
+| **Repackaging detection** | Flags injected instrumentation (Frida Gadget and similar), non-ELF files masquerading as `.so`, and re-signed builds — so crack behaviour is never reported as app behaviour |
+
+## Engine-first triage
+
+Engines differ enough that picking the wrong workflow wastes the whole session. Phase 0 decides:
+
+| Found in `lib/` | Engine | Workflow |
+|---|---|---|
+| `libil2cpp.so` | Unity IL2CPP | Phases U1–U8 |
+| `Assembly-CSharp.dll` (no libil2cpp) | Unity Mono | open directly in dnSpy / ICSharpCode.Decompiler |
+| `libUE4.so` | **Unreal Engine 4/5** | **Phases E1–E6** |
+| neither | standard Android app | Phases 1–5 |
+
+Two checks that materially change the plan and are worth doing immediately:
+
+1. **Is the engine binary stripped?** If `.dynsym` survives, UE4 gives you every class, function and
+   parameter name without decompiling anything.
+2. **Is the pak data section AES-encrypted?** The index usually stays readable (so you get the full
+   asset graph), but `.uasset` payloads may be unrecoverable if the key is not shipped — which is
+   the normal case. The skill treats that as a bounded, reportable outcome rather than a failure.
+
+A repackaging check (Phase 0c) also runs early, because a large share of APKs circulating outside
+official channels carry injected instrumentation — and mistaking that layer's behaviour for the
+app's is the easiest way to produce a wrong report. See
+[`repackaging-forensics.md`](plugins/android-reverse-engineering/skills/android-reverse-engineering/references/repackaging-forensics.md).
 
 ## Requirements
 
@@ -43,6 +71,12 @@ A Claude Code skill that decompiles Android APK/XAPK/JAR/AAR files and **extract
 
 - [Vineflower](https://github.com/Vineflower/vineflower) or [Fernflower](https://github.com/JetBrains/fernflower) — better output on complex Java code
 - [dex2jar](https://github.com/ThexXTURBOXx/dex2jar) — needed to use Fernflower on APK/DEX files
+
+**Optional — game engines:**
+
+- Java JDK 21+ and [Ghidra](https://ghidra-sre.org/) 12+ — method-body recovery for both Unity IL2CPP and Unreal Engine
+- Python 3 with `pyghidra`, `capstone`, `dnfile`, `UnityPy` (Unity) and `pyelftools` (native-library classification)
+- [repak](https://github.com/trumank/repak) — Unreal Engine pak listing/unpacking
 
 See `plugins/android-reverse-engineering/skills/android-reverse-engineering/references/setup-guide.md` for detailed installation instructions.
 
@@ -174,7 +208,11 @@ android-reverse-engineering-skill/
 │       │       │   ├── api-extraction-patterns.md
 │       │       │   ├── kotlin-name-recovery.md
 │       │       │   ├── third_party_hosts.txt   # denylist for first/third-party bucketing
-│       │       │   └── call-flow-analysis.md
+│       │       │   ├── call-flow-analysis.md
+│       │       │   ├── unity-assets-extraction.md
+│       │       │   ├── unity-il2cpp-reversing.md
+│       │       │   ├── ue4-reversing.md        # Unreal Engine 4/5 workflow (Phases E1–E6)
+│       │       │   └── repackaging-forensics.md # injected/re-signed build detection
 │       │       └── scripts/
 │       │           ├── check-deps.sh       # Bash
 │       │           ├── check-deps.ps1      # PowerShell
@@ -186,7 +224,17 @@ android-reverse-engineering-skill/
 │       │           ├── recover-kotlin-names.sh # R8 → real Kotlin class names
 │       │           ├── lookup-name.sh          # query the recovered name map
 │       │           ├── find-api-calls.sh
-│       │           └── find-api-calls.ps1
+│       │           ├── find-api-calls.ps1
+│       │           ├── extract_ue4_symbols.py       # UE4: reflected-symbol API recovery
+│       │           ├── parse_ue4_pak_index.py       # UE4: pak index parser (no AES key needed)
+│       │           ├── decompile_ue4_headless.py    # UE4: Ghidra body recovery
+│       │           ├── decompile_il2cpp_headless.py # Unity: Ghidra body recovery
+│       │           ├── annotate_decompiled.py
+│       │           ├── annotate_fields.py
+│       │           ├── annotate_metadata.py
+│       │           ├── filter_symbols.py
+│       │           ├── verify_addresses.py
+│       │           └── extract_assets.py
 │       └── commands/
 │           └── decompile.md                # /decompile slash command
 ├── LICENSE
@@ -200,6 +248,11 @@ android-reverse-engineering-skill/
 - [Vineflower — Fernflower community fork](https://github.com/Vineflower/vineflower)
 - [dex2jar — DEX to JAR converter](https://github.com/ThexXTURBOXx/dex2jar)
 - [apktool — Android resource decoder](https://apktool.org/)
+- [Ghidra — software reverse engineering suite](https://ghidra-sre.org/)
+- [pyghidra — Python bindings for Ghidra](https://github.com/NationalSecurityAgency/ghidra/tree/master/Ghidra/Features/PyGhidra)
+- [Il2CppDumper — Unity IL2CPP metadata dumper](https://github.com/Perfare/Il2CppDumper)
+- [repak — Unreal Engine pak reader/writer](https://github.com/trumank/repak)
+- [UAssetAPI / UAssetGUI — Unreal Engine asset parsing](https://github.com/atenfyr/UAssetAPI)
 
 ## Acknowledgments
 

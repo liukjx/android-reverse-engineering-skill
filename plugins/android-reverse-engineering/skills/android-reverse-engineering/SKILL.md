@@ -1,12 +1,14 @@
 ---
 name: android-reverse-engineering
-description: Decompile Android APK, XAPK, JAR, and AAR files using jadx or Fernflower/Vineflower. Reverse engineer Android apps, extract HTTP API endpoints (Retrofit, OkHttp, Volley), and trace call flows from UI to network layer. For Unity IL2CPP games, recover method bodies via headless Ghidra (pyghidra) + Il2CppDumper — full command-line pipeline, no GUI needed — and extract Unity assets (scene hierarchy, prefab structure, serialized component values, textures, meshes, animations, audio) via UnityPy + AssetStudioMod (NOT Cpp2IL, whose IL-recovery is a known unimplemented stub). Use when the user wants to decompile, analyze, or reverse engineer Android packages, find API endpoints, follow call flows, or extract game assets. 中文触发词：反编译APK、安卓逆向、提取API、分析安卓应用、反编译安卓、逆向工程、追踪调用链、提取接口、命令行反编译、无GUI反编译、提取贴图、提取模型、提取场景、prefab层级
-trigger: decompile APK|decompile XAPK|reverse engineer Android|extract API|analyze Android|jadx|fernflower|vineflower|follow call flow|decompile JAR|decompile AAR|Android reverse engineering|find API endpoints|unity il2cpp|libil2cpp|reverse unity game|ghidra headless|pyghidra|command line decompile|decompile without GUI|extract assets|scene hierarchy|prefab|UnityPy|AssetStudio|extract texture|extract model|反编译APK|安卓逆向|提取API|分析安卓应用|逆向unity|命令行反编译|无GUI反编译|提取贴图|提取模型|提取场景|prefab层级
+description: Decompile Android APK, XAPK, JAR, and AAR files using jadx or Fernflower/Vineflower. Reverse engineer Android apps, extract HTTP API endpoints (Retrofit, OkHttp, Volley), and trace call flows from UI to network layer. For Unity IL2CPP games, recover method bodies via headless Ghidra (pyghidra) + Il2CppDumper — full command-line pipeline, no GUI needed — and extract Unity assets (scene hierarchy, prefab structure, serialized component values, textures, meshes, animations, audio) via UnityPy + AssetStudioMod (NOT Cpp2IL, whose IL-recovery is a known unimplemented stub). For Unreal Engine 4/5 games, recover the full class/function/property API from reflected Z_Construct_* symbols, parse pak containers (including AES-encrypted ones) and decompile method bodies with headless Ghidra. Also detects repackaged/instrumented builds (Frida Gadget and similar) so third-party crack behaviour is never mistaken for app behaviour. Use when the user wants to decompile, analyze, or reverse engineer Android packages, find API endpoints, follow call flows, or extract game assets. 中文触发词：反编译APK、安卓逆向、提取API、分析安卓应用、反编译安卓、逆向工程、追踪调用链、提取接口、命令行反编译、无GUI反编译、提取贴图、提取模型、提取场景、prefab层级、虚幻引擎逆向、UE4逆向、pak解包、蓝图还原
+trigger: decompile APK|decompile XAPK|reverse engineer Android|extract API|analyze Android|jadx|fernflower|vineflower|follow call flow|decompile JAR|decompile AAR|Android reverse engineering|find API endpoints|unity il2cpp|libil2cpp|reverse unity game|ghidra headless|pyghidra|command line decompile|decompile without GUI|extract assets|scene hierarchy|prefab|UnityPy|AssetStudio|extract texture|extract model|unreal engine|UE4|UE5|libUE4|pak file|repak|uasset|blueprint|Z_Construct|reflected symbols|repackaged APK|frida gadget|反编译APK|安卓逆向|提取API|分析安卓应用|逆向unity|命令行反编译|无GUI反编译|提取贴图|提取模型|提取场景|prefab层级|虚幻引擎逆向|UE4逆向|pak解包|蓝图还原|破解版识别
 ---
 
 # Android Reverse Engineering
 
-Decompile Android APK/XAPK/JAR/AAR with jadx and Fernflower/Vineflower, trace call flows, and produce structured API documentation. Two decompiler engines: jadx for broad Android coverage and Fernflower for higher-quality Java on complex code. For Unity IL2CPP games, see the dedicated workflow below — this is a different problem and jadx alone is useless there.
+Decompile Android APK/XAPK/JAR/AAR with jadx and Fernflower/Vineflower, trace call flows, and produce structured API documentation. Two decompiler engines: jadx for broad Android coverage and Fernflower for higher-quality Java on complex code. For Unity IL2CPP games, see the dedicated workflow below — this is a different problem and jadx alone is useless there. For **Unreal Engine 4/5** games see the UE4 workflow — also a different problem, with an entirely different toolchain.
+
+**Engine choice dominates everything.** Determine the engine in Phase 0 before investing in any decompiler; picking the wrong workflow wastes the whole session.
 
 ## Prerequisites
 
@@ -16,6 +18,8 @@ Decompile Android APK/XAPK/JAR/AAR with jadx and Fernflower/Vineflower, trace ca
 - Il2CppDumper (auto-downloaded from wklin8607/Il2CppDumper if missing — that fork supports metadata v39, incl. the new magic 0xFAB11BAF and Unity 6 builds)
 - AssetStudioMod CLI (aelurum fork, optional but recommended — the only reliable way to read STRIPPED MonoBehaviour serialized values, via `--assembly-folder` + Il2CppDumper's DummyDll)
 - Cpp2IL — only used for structure (stub DLLs); it does NOT recover bodies (see warning)
+- **UE4/UE5 only**: repak (pak listing/unpacking; auto-downloaded from trumank/repak) and pyelftools
+  (`pip install pyelftools`) for classifying native libraries. Ghidra 12+ is required for bodies.
 
 All tool paths are resolved by the scripts via which / env vars, NOT hardcoded. Set JAVA_HOME explicitly per-phase because jadx wants JDK 17 and Ghidra wants JDK 21.
 
@@ -32,7 +36,87 @@ Run BEFORE anything else:
 Key decision:
 - has libil2cpp.so -> Unity IL2CPP -> jump to Phase U1 (Phases 1-5 below are useless for it)
 - has Assembly-CSharp.dll (no libil2cpp) -> Unity Mono -> open with dnSpy / ICSharpCode.Decompiler directly
+- has **libUE4.so** -> **Unreal Engine 4** -> jump to Phase E1 (Phases 1-5 AND U1-U8 are all useless)
 - neither -> standard Android app -> continue with Phase 1
+
+**Do not assume Unity.** Most VR/Quest game APKs are one of three engines, and jadx alone tells you
+nothing about any of them. Decide from the `lib/` listing before spending time anywhere else.
+
+### Phase 0b: Engine version + asset-container reconnaissance
+
+Once you know the engine family, pin the **exact version** and locate the **asset container** — they
+dictate every later step. Leaked build-machine paths in the engine .so are the fastest signal:
+
+    # UE4 example — finds the exact engine release baked into the binary
+    python -c "
+    import re
+    d=open('<path/to/libUE4.so>','rb').read()
+    for m in list(re.finditer(rb'\+\+UE4\+Release-4\.[0-9]+', d))[:3]:
+        print(m.group(0).decode())
+    "
+    # -> ++UE4+Release-4.20   => UE4.20 (different pak/uasset layouts exist per release!)
+
+    # Unity example — same idea, version lives in the global-metadata header
+    python -c "
+    import struct
+    d=open('<path/to/global-metadata.dat>','rb').read(8)
+    print('magic=%08x version=%d' % struct.unpack('<Ii', d))
+    "
+
+Asset containers, in the order to look:
+
+| Engine | Container | Where |
+|---|---|---|
+| UE4 | `*.pak` (+ `*.utoc/*.ucas` on UE5/IoStore) | `<Game>/Content/Paks/` — often in the **OBB**, not the APK |
+| UE4 | `.uproject` name | `assets/UE4CommandLine.txt` (the launch line names the project) |
+| Unity | `data.unity3d` + Addressables | `assets/bin/Data/`, OBB |
+| Unity | `global-metadata.dat` | `assets/bin/Data/Managed/Metadata/` |
+
+### Phase 0c: Detect a repackaged / instrumented build BEFORE analyzing gameplay
+
+A large share of APKs circulating on non-official channels are repacked, and some carry an injected
+instrumentation framework. This **changes what your findings mean**: a hooking layer is evidence about
+*the crack*, not about the game. Check this early so you do not attribute third-party behaviour to the app.
+
+Fast triage — three cheap checks:
+
+    # 1. A native lib that does NOT belong to the engine is the top tell.
+    #    Confirm what it really is via DT_SONAME / DT_NEEDED (a "game module" that links
+    #    only libc/libm/liblog/libdl and does NOT link the engine .so is not a game module):
+    python -c "
+    from elftools.elf.elffile import ELFFile
+    with open('<path/to/suspicious.so>','rb') as f:
+        e=ELFFile(f)
+        for s in e.iter_segments():
+            if s.header.p_type=='PT_DYNAMIC':
+                for t in s.iter_tags():
+                    if t.entry.d_tag in ('DT_SONAME','DT_NEEDED'):
+                        print(t.entry.d_tag, getattr(t,'soname',None) or t.needed)
+    "
+    # Frida Gadget -> DT_SONAME libfrida-gadget-raw.so
+
+    # 2. Files named *.so that are NOT ELF at all (config/script carriers):
+    python -c "
+    import glob
+    for p in glob.glob('<dir>/*.so'):
+        b=open(p,'rb').read(4)
+        if b != b'\x7fELF': print('NOT ELF:', p, b)
+    "
+    # -> a  b'var '  head means it is JavaScript, not a shared library
+
+    # 3. Signing identity — was it resigned?
+    keytool -printcert -jarfile <app.apk> 2>/dev/null | head -20
+    # CN=localhost / OU=zz / O=zz / 1024-bit RSA / SHA1withRSA  => auto-generated debug cert, not a publisher
+
+Corroborating signals: a `META-INF/` pair whose name is a warez brand rather than the publisher;
+extra PNG/TXT files dropped into `assets/bin/`; `resources.arsc` app_name rewritten with a site URL;
+an OBB declared size that matches the shipping manifest but an unusual count of per-device signature
+blobs (`oculussig_*` — an official build carries one for the buyer, a crack ships dozens).
+
+Full detail and the reference evidence chain: `references/repackaging-forensics.md`.
+
+**Reporting rule**: keep two separate tables — *engine/app* vs *injected/repackaging* — and never
+let the second one's behaviour be described as game behaviour.
 
 ---
 
@@ -287,14 +371,184 @@ Shader note: original ShaderLab/HLSL is NOT recoverable from a build — dumps g
 
 ---
 
+## Unreal Engine 4 Game Workflow (Phases E1-E6)
+
+If Phase 0 finds **libUE4.so**, use this. Phases 1-5 and U1-U8 are all useless here: there is no
+IL2CPP, no `global-metadata.dat`, no `data.unity3d`, and no C# to recover. UE4 ships **compiled C++**
+plus **Blueprints** serialized into `.uasset` files.
+
+Full reference (layouts, gotchas, worked examples): `references/ue4-reversing.md`.
+
+### CRITICAL: the two things that decide how far you can get
+
+1. **Is the engine .so stripped?** If `.dynsym` survives you get every class and method signature —
+   including parameter names — for free, and Ghidra decompilation becomes straightforward. If it is
+   stripped you fall back to string/asset archaeology. **Check this first; it determines your whole plan.**
+
+       python -c "
+       import struct
+       d=open('<path/to/libUE4.so>','rb').read()
+       e_shoff=struct.unpack_from('<Q',d,0x28)[0]; n=struct.unpack_from('<H',d,0x3c)[0]
+       for i in range(n):
+           o=e_shoff+i*64
+           name,typ,flags,addr,off,size=struct.unpack_from('<IIQQQQ',d,o)
+           # resolve name via .shstrndx if you need it; sizes alone are the tell
+       print('scan sections for .dynsym / .symtab')
+       "
+       # .dynsym present with ~300k entries => UNSTRIPPED, you are in luck
+
+2. **Is the pak's DATA section encrypted?** The index is usually plaintext (so you can `list` every
+   asset path) while the payloads are AES-256. If the key is not in the package you cannot read
+   `.uasset` *contents* — only their **names and sizes**. This is normal for shipped UE4 games and is
+   NOT a tooling failure. Detect it in seconds:
+
+       repak unpack <pak> -o <out> -i '<some/dir>'
+       # "Error: pak is encrypted but no key was provided"  => data encrypted
+
+   The AES key lives in the build's `Crypto.json`, which is **not shipped inside the pak**. Look for
+   `Crypto.json`, a `-aes=` command line, or a 32-byte base64/hex constant in the binaries; if all
+   come up empty, say so plainly and pivot to structure + asset graph (see "When the pak is encrypted").
+
+### Phase E1: Extract engine + asset container
+
+    WORK_DIR="<ascii-only-work-dir>"     # non-ASCII paths break dotnet/ghidra/objdump/repak
+    mkdir -p "$WORK_DIR/apk-extracted"
+    unzip -o "$APK" "lib/arm64-v8a/libUE4.so" -d "$WORK_DIR/apk-extracted"
+    unzip -o -j "$APK" "assets/UE4CommandLine.txt" -d "$WORK_DIR/apk-extracted"
+    # UE4CommandLine.txt names the project, e.g. "../../../Travel/Travel.uproject"
+
+    # The real content lives in the OBB (a plain ZIP, usually STORE-mode):
+    OBB="$(find "$(dirname "$APK")" -name '*.obb' | head -1)"
+    unzip -o -q "$OBB" -d "$WORK_DIR/obb-extracted"
+    # -> obb-extracted/<Project>/Content/Paks/pakchunk0-Android_Multi.pak
+    # Keep the pak on an ASCII path: repak reports "io error: The system cannot find the path
+    # specified (os error 3)" purely because of non-ASCII characters in the path.
+
+### Phase E2: Recover the API surface from reflected symbols (highest value per minute)
+
+UE4's UHT generates a `Z_Construct_*` symbol for **every** UCLASS / USTRUCT / UENUM / UFUNCTION /
+UPROPERTY, and the mangled name **encodes the class, the function, AND every parameter name**. This
+means you can reconstruct the entire Blueprint-callable API *without decompiling anything*:
+
+    _ZN<len>Z_Construct_UFunction_<Class>_<Func>_Statics<n>NewProp_<Param>(_Underlying|_SetBit|_Inner)?E
+    _ZN<len>Z_Construct_UClass_<Class>_Statics<n>NewProp_<Prop>E
+
+    python3 "$SKILL_DIR/scripts/extract_ue4_symbols.py" \
+        "$WORK_DIR/apk-extracted/lib/arm64-v8a/libUE4.so" "$WORK_DIR/ue4-symbols"
+
+Produces: `dynsym.json` (every symbol with address/size), `game-classes.json` (app classes only),
+`game-blueprint-functions.json` (class -> func -> param names), `game-properties.json`,
+`reflected-types.json`, and `symbols_map.txt` (hex-address|Class$mangled) ready for Ghidra.
+
+**Identifying app classes among 17k+ engine types**: app code clusters in a namespace/brand prefix.
+Read a handful of `Z_Construct_UClass_*` names, spot the prefix (e.g. `TR`/`FF` for a project named
+Travel by ForceField), then filter on it. Script accepts `--class-prefix`.
+
+### Phase E3: Read the pak index (asset graph without decrypting anything)
+
+Even when payloads are encrypted, the **index is usually plaintext**, so every asset path and size is
+readable. Use repak for the listing, and a self-written parser when repak panics:
+
+    gh release download --repo trumank/repak --pattern "*windows-msvc.zip" -D "$WORK_DIR/tools" && \
+      (cd "$WORK_DIR/tools" && unzip -o -q *repak*.zip -d repak)
+    "$WORK_DIR/tools/repak/repak.exe" info  <pak>      # mount point, version, entry count, encryption
+    "$WORK_DIR/tools/repak/repak.exe" list  <pak> > filelist.txt
+
+UE4 pak **v5 footer** (last 44 bytes of the file — do NOT hunt for the magic with rfind, it also
+occurs inside entry headers and you will read garbage):
+
+    i32 Magic(0x5A6F12E1) | i32 Version | i64 IndexOffset | i64 IndexSize | byte[20] IndexHash
+
+`SHA1(index_bytes) == IndexHash` proves the index is plaintext. Parse with:
+
+    python3 "$SKILL_DIR/scripts/parse_ue4_pak_index.py" <pak> --out pak-index.json
+
+Entry layout (v5, verified field-by-field):
+
+    i32 nameLen | name[nameLen] | i64 Offset | i64 CompressedSize | i64 UncompressedSize
+    | i32 CompressionMethod(4=LZ4, 0=stored) | byte[20] Hash
+    | if CompressionMethod != 0: i32 BlockCount + BlockCount*(i64 CompressedSize, i64 UncompressedSize)
+    | byte[5] tail flags
+
+**repak 0.2.3 quirks seen in the wild**: `get`/`unpack` may panic with
+`index out of bounds: the len is 3 but the index is 3` (entry.rs) — the run still emits whatever it
+could decode, and the panic is not a usage error. `--strip-prefix ""` is rejected by clap; the
+default `../../../` strip is the correct form.
+
+### Phase E4: Ghidra for method bodies (despite the name, headless)
+
+Same headless pyghidra route as Phase U6, with **one important simplification**: because
+`.dynsym` already gives an address per method, you do **not** need Il2CppDumper-style address
+recovery. Feed `symbols_map.txt` straight in.
+
+    export GHIDRA_INSTALL_DIR="<ghidra_12.x_PUBLIC>"; export JAVA_HOME="<JDK-21>"
+    python3 "$SKILL_DIR/scripts/decompile_ue4_headless.py" \
+        "$WORK_DIR/apk-extracted/lib/arm64-v8a/libUE4.so" \
+        "$WORK_DIR/ue4-symbols/symbols_map.txt" \
+        "$WORK_DIR/decompiled" <project-name>
+
+Verified on a 110 MB libUE4.so / 295k dynsym / 7.7k app methods: **7114 methods decompiled, 0 failures,
+234 class files, ~5 min**. Two notes:
+- Ghidra's image base for these ELF .so is `0x100000`; addresses from `.dynsym` are RVAs.
+- **Filter out `Z_Construct_*` symbols from symbols_map.txt** — they are reflection registration
+  stubs, not app logic, and roughly 8% of the input can be duplicate/alias addresses.
+- Unlike the Unity path, output arrives already carrying demangled UE4 symbol names, so the
+  `annotate_decompiled.py` pass is unnecessary.
+
+### Phase E5: Non-engine native libs and the Java layer
+
+The Java layer of a UE4 Android build is a thin bootstrap — expect an `OBBDownloaderService` from
+Epic's template wrapping Google's APK Expansion Library, and essentially no game logic. Run jadx
+anyway (Phase 2) to confirm and to catch the launch arguments.
+
+Classify every `lib/*.so` before trusting any of it: engine libs, vendor SDKs (Oculus/OpenXR), and
+anything that fits neither — the last group is the Phase 0c repackaging signal.
+
+### Phase E6: Text content and localization
+
+Game text is usually NOT in DataTables. Check for:
+
+- `Content/Localization/**/*.locres` (+ `.locmeta`) — one per language, often 200 KB+ of prose
+- `Content/Data/Localization/ST_*` StringTables
+- VO audio cue names (`CUE_*`/`DIA_*`/`SA_*`) — these **spell out onboarding and tutorial order**
+  and are readable from the asset path list alone
+
+But note: if the pak data section is encrypted, `.locres` **text is not readable either** — you get
+language inventory and file sizes, not the strings.
+
+---
+
+### When the pak is encrypted: deliver structure, not fabricated content
+
+Do not stall, and do not guess. The plaintext index plus unstripped symbols typically still yield a
+complete structural picture:
+
+| Still obtainable | How |
+|---|---|
+| Engine version, project name | Phase 0b + `UE4CommandLine.txt` |
+| Full class/function/property API with parameter names | Phase E2 reflected symbols |
+| Game data model & enums | `ETR*`/`EXX*` reflected enum types name every state |
+| Level list + how levels split (streaming) | pak index `.umap` paths |
+| Content structure (DataAssets, Blueprints, UI) | pak index `DA_*`, `BP_*`, `WBP_*` names |
+| Player flow, tutorial order | OBB plaintext JSONs + VO cue names |
+| Language inventory | `.locres` paths and sizes |
+| Method bodies | Phase E4 |
+
+State plainly what is **not** recoverable (`.uasset` serialized values, DataTable rows, StringTable
+text, locres prose) and mark it as such. A structure-complete, honestly-bounded result is the correct
+deliverable — not a partly-invented one.
+
+---
+
 ## Java version cheat-sheet
 
 | step | JAVA_HOME |
 |------|-----------|
 | jadx / Fernflower | JDK 17 |
-| Ghidra import/analyze | JDK 21 |
+| Ghidra import/analyze (Unity **and** UE4) | JDK 21 |
 | Il2CppDumper | none (dotnet) |
 | Cpp2IL | none (dotnet, structure only) |
+| repak / pak parsing | none |
 
 ---
 
@@ -305,14 +559,32 @@ Shader note: original ShaderLab/HLSL is NOT recoverable from a build — dumps g
 | Il2CppDumper (v39 fork) | $WORK_DIR/Il2CppDumper-v6.7.48/extracted/ |
 | Cpp2IL | $WORK_DIR/Cpp2IL/ (structure only) |
 | Ghidra | wherever you install it (12+) |
+| repak | $WORK_DIR/tools/repak/ |
 
 ---
 
 ## Output
 
+**Unity IL2CPP:**
 1. Structure — dump.cs (classes/fields/signatures), source/ skeleton from Cpp2IL
-2. Bodies — decompiled/<Class>.c per-class C pseudocode from Ghidra headless, call sites annotated with real Class$$Method names (_INDEX.md lists all classes)
+2. Bodies — decompiled/<Class>.c per-class C pseudocode from Ghidra headless, call sites annotated with real Class$Method names (_INDEX.md lists all classes)
 3. ARM64 disasm — objdump/capstone of key functions with resolved callee names
 4. Strings — URLs / keys / constants from stringliteral.json (+ leaked original source paths)
 5. Assets — scene hierarchy JSON, MonoBehaviour serialized values with real field names, png/ttf/wav/obj media
 6. Architecture summary — module deps + call chains
+
+**Unreal Engine 4/5:**
+1. Fingerprint — engine version, project name, pak version, **encryption status of the pak data section**
+2. API surface — game-classes.json, game-blueprint-functions.json (functions **with parameter names**), game-properties.json, reflected-types.json
+3. Bodies — decompiled/<Class>.c per-class C pseudocode from Ghidra headless (already demangled)
+4. Asset graph — pak-index.json + filelist: levels (*.umap), DataAssets, Blueprints, StringTables, localization inventory
+5. Runtime layers — Java bootstrap (OBB download/verify), native lib classification (engine / vendor SDK / injected)
+6. Provenance — repackaging & instrumentation findings kept in a **separate table** from app behaviour
+7. Architecture summary — data model, enums, level/flow structure, and an explicit list of what could **not** be recovered and why
+
+### Universal reporting rule
+
+Separate **established facts** (with the command and its real output) from **inference**. When a
+container is encrypted or a symbol is stripped, list the affected deliverables as *unavailable with
+a stated reason* rather than guessing. A structure-complete, honestly-bounded report beats a
+partly-invented one.
